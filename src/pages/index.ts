@@ -1,0 +1,7 @@
+export { DashboardPage } from './DashboardPage'
+export { BudgetPage } from './BudgetPage'
+export { PatrimoinePage } from './PatrimoinePage'
+export { ImportPage } from './ImportPage'
+export { TransactionsPage } from './TransactionsPage'
+export { CategoriesPage } from './CategoriesPage'
+export { SettingsPage } from './SettingsPage'
