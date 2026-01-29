@@ -214,3 +214,35 @@ export async function learnFromAllCorrections(): Promise<{
 
   return { rulesCreated, transactionsUpdated }
 }
+
+/**
+ * Recategorize all transactions using default patterns + user rules
+ * Only updates transactions that are not manually edited
+ */
+export async function recategorizeAllTransactions(): Promise<{
+  updated: number
+  total: number
+}> {
+  const { getCategorizerWithRules } = await import('./index')
+  const categorizer = await getCategorizerWithRules()
+
+  const allTransactions = await db.transactions.toArray()
+  let updated = 0
+
+  for (const t of allTransactions) {
+    // Skip manually edited transactions
+    if (t.isManuallyEdited) continue
+
+    const isExpense = t.amount < 0
+    const newCategory = categorizer.categorize(t.description, t.type, isExpense)
+
+    if (newCategory && newCategory !== t.category) {
+      await db.transactions.update(t.id, { category: newCategory })
+      console.log(`🔄 Recategorized: "${t.description.substring(0, 40)}..." → ${newCategory}`)
+      updated++
+    }
+  }
+
+  console.log(`✅ Recategorized ${updated}/${allTransactions.length} transactions`)
+  return { updated, total: allTransactions.length }
+}

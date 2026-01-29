@@ -45,7 +45,7 @@ export const SpendingPatternsChart = memo(function SpendingPatternsChart({
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minHeight={200}>
       <BarChart
         data={orderedData}
         margin={{ top: 10, right: 10, left: 0, bottom: 0 }}

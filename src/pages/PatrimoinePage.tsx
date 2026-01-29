@@ -22,10 +22,13 @@ import {
   Sparkles,
   Play,
   RotateCcw,
+  ArrowLeftRight,
+  Link,
 } from 'lucide-react'
 import { v4 as uuidv4 } from 'uuid'
-import { db, assetAccountService, liabilityService, netWorthSnapshotService } from '@services/db'
+import { db, assetAccountService, liabilityService, netWorthSnapshotService, savingsGoalService } from '@services/db'
 import { Card, CardTitle, Button, useToast } from '@components/common'
+import { TransferModal } from '@components/patrimoine/TransferModal'
 import { formatMoney } from '@utils/formatters'
 import type { AssetAccount, AssetAccountType } from '@/types'
 
@@ -59,11 +62,25 @@ export function PatrimoinePage() {
   const toast = useToast()
   const [showAddModal, setShowAddModal] = useState(false)
   const [showUpdateBalanceModal, setShowUpdateBalanceModal] = useState<AssetAccount | null>(null)
+  const [showTransferModal, setShowTransferModal] = useState(false)
 
   // Load data
   const accounts = useLiveQuery(() => db.assetAccounts.orderBy('order').toArray(), []) ?? []
   const liabilities = useLiveQuery(() => db.liabilities.filter(l => l.isActive).toArray(), []) ?? []
   const snapshots = useLiveQuery(() => netWorthSnapshotService.getMonthlySnapshots(12), []) ?? []
+  const savingsGoals = useLiveQuery(() => savingsGoalService.getAll(), []) ?? []
+
+  // Map of account ID to linked savings goals
+  const goalsByAccount = useMemo(() => {
+    const map = new Map<string, typeof savingsGoals>()
+    for (const goal of savingsGoals) {
+      if (goal.linkedAssetAccountId) {
+        const existing = map.get(goal.linkedAssetAccountId) || []
+        map.set(goal.linkedAssetAccountId, [...existing, goal])
+      }
+    }
+    return map
+  }, [savingsGoals])
 
   // Calculate totals
   const totals = useMemo(() => {
@@ -154,10 +171,16 @@ export function PatrimoinePage() {
           </h1>
           <p className="text-gray-400 text-sm mt-1">Suivi de votre richesse globale</p>
         </div>
-        <Button variant="primary" onClick={() => setShowAddModal(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Ajouter un compte
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => setShowTransferModal(true)}>
+            <ArrowLeftRight className="w-4 h-4 mr-2" />
+            Transférer
+          </Button>
+          <Button variant="primary" onClick={() => setShowAddModal(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Ajouter un compte
+          </Button>
+        </div>
       </div>
 
       {/* Net Worth Card */}
@@ -331,6 +354,14 @@ export function PatrimoinePage() {
                           </>
                         )}
                       </div>
+                      {goalsByAccount.get(account.id) && goalsByAccount.get(account.id)!.length > 0 && (
+                        <div className="flex items-center gap-1 mt-1">
+                          <Link className="w-3 h-3 text-purple-400" />
+                          <span className="text-xs text-purple-400">
+                            {goalsByAccount.get(account.id)!.map(g => g.name).join(', ')}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -381,6 +412,17 @@ export function PatrimoinePage() {
           account={showUpdateBalanceModal}
           onClose={() => setShowUpdateBalanceModal(null)}
           onUpdate={handleUpdateBalance}
+        />
+      )}
+
+      {/* Transfer Modal */}
+      {showTransferModal && (
+        <TransferModal
+          accounts={accounts}
+          onClose={() => setShowTransferModal(false)}
+          onTransferComplete={() => {
+            // Refresh is automatic with useLiveQuery
+          }}
         />
       )}
     </div>

@@ -1,8 +1,10 @@
 import { memo, useMemo, useState, useCallback, useRef, useEffect } from 'react'
-import { CreditCard, X, CheckSquare, Tag, XCircle } from 'lucide-react'
+import { CreditCard, X, CheckSquare, Tag, XCircle, Calendar } from 'lucide-react'
 import type { Transaction, Category } from '@/types'
-import { Card, CardTitle, Button, EmptyTransactions, EmptySearch } from '@components/common'
+import { Card, CardTitle, Button, EmptyTransactions, EmptySearch, useToast } from '@components/common'
 import { TransactionRow } from './TransactionRow'
+import { EditTransactionModal } from './EditTransactionModal'
+import { transactionService } from '@services/db'
 
 type ViewMode = 'all' | 'expenses' | 'income'
 
@@ -10,9 +12,11 @@ interface TransactionListProps {
   transactions: Transaction[]
   categories: Category[]
   selectedCategory?: string | null
+  householdMembers?: string[]
   onClearCategory?: () => void
   onCategoryChange?: (transactionId: string, categoryId: string) => void
   onBudgetMonthChange?: (transactionId: string, budgetMonth: string | undefined) => void
+  onAssignedToChange?: (transactionId: string, assignedTo: string | undefined) => void
   onBulkCategoryChange?: (transactionIds: string[], categoryId: string) => void
 }
 
@@ -20,16 +24,30 @@ export const TransactionList = memo(function TransactionList({
   transactions,
   categories,
   selectedCategory,
+  householdMembers = [],
   onClearCategory,
   onCategoryChange,
   onBudgetMonthChange,
+  onAssignedToChange,
   onBulkCategoryChange,
 }: TransactionListProps) {
+  const toast = useToast()
   const [viewMode, setViewMode] = useState<ViewMode>('all')
+  const [selectedMonth, setSelectedMonth] = useState<string>('all') // 'all' or 'YYYY-MM'
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [showBulkDropdown, setShowBulkDropdown] = useState(false)
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
   const bulkDropdownRef = useRef<HTMLDivElement>(null)
+
+  // Get unique months from transactions
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>()
+    for (const t of transactions) {
+      months.add(t.date.substring(0, 7))
+    }
+    return Array.from(months).sort().reverse()
+  }, [transactions])
 
   const categoryMap = useMemo(() => {
     return new Map(categories.map((c) => [c.id, c]))
@@ -56,6 +74,10 @@ export const TransactionList = memo(function TransactionList({
       filtered = filtered.filter((t) => t.category === selectedCategory)
     }
 
+    if (selectedMonth !== 'all') {
+      filtered = filtered.filter((t) => t.date.startsWith(selectedMonth))
+    }
+
     if (viewMode === 'expenses') {
       filtered = filtered.filter((t) => t.amount < 0)
     } else if (viewMode === 'income') {
@@ -63,7 +85,7 @@ export const TransactionList = memo(function TransactionList({
     }
 
     return [...filtered].sort((a, b) => b.date.localeCompare(a.date))
-  }, [transactions, selectedCategory, viewMode])
+  }, [transactions, selectedCategory, selectedMonth, viewMode])
 
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     setViewMode(mode)
@@ -111,6 +133,20 @@ export const TransactionList = memo(function TransactionList({
     setSelectedIds(new Set())
   }, [])
 
+  const handleEdit = useCallback((transaction: Transaction) => {
+    setEditingTransaction(transaction)
+  }, [])
+
+  const handleSaveEdit = useCallback(async (id: string, updates: Partial<Transaction>) => {
+    await transactionService.update(id, updates)
+    toast.success('Transaction modifiée', 'Les modifications ont été enregistrées')
+  }, [toast])
+
+  const handleDelete = useCallback(async (id: string) => {
+    await transactionService.delete(id)
+    toast.success('Transaction supprimée', 'La transaction a été supprimée')
+  }, [toast])
+
   const isAllSelected = filteredTransactions.length > 0 && selectedIds.size === filteredTransactions.length
   const isSomeSelected = selectedIds.size > 0
 
@@ -132,7 +168,29 @@ export const TransactionList = memo(function TransactionList({
             </span>
           )}
         </CardTitle>
-        <div className="flex gap-2 flex-wrap" role="group" aria-label="Filtrer par type">
+        <div className="flex gap-2 flex-wrap items-center" role="group" aria-label="Filtrer par type">
+          {/* Month filter */}
+          <div className="flex items-center gap-1 bg-gray-700 rounded-lg px-2 py-1">
+            <Calendar className="w-4 h-4 text-gray-400" />
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="bg-transparent border-none text-sm text-white focus:outline-none cursor-pointer"
+            >
+              <option value="all">Tous les mois</option>
+              {availableMonths.map(month => {
+                const [year, m] = month.split('-')
+                const date = new Date(parseInt(year), parseInt(m) - 1)
+                const label = date.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })
+                return (
+                  <option key={month} value={month}>
+                    {label.charAt(0).toUpperCase() + label.slice(1)}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+
           {(['all', 'expenses', 'income'] as const).map((mode) => (
             <Button
               key={mode}
@@ -235,6 +293,14 @@ export const TransactionList = memo(function TransactionList({
                   <th className="pb-3 font-medium text-right" scope="col">
                     Montant
                   </th>
+                  {householdMembers.length > 0 && (
+                    <th className="pb-3 font-medium text-center" scope="col">
+                      Imputé à
+                    </th>
+                  )}
+                  <th className="pb-3 w-10" scope="col">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700/50">
@@ -244,8 +310,12 @@ export const TransactionList = memo(function TransactionList({
                     transaction={t}
                     category={categoryMap.get(t.category)}
                     allCategories={categories}
+                    householdMembers={householdMembers}
                     onCategoryChange={onCategoryChange}
                     onBudgetMonthChange={onBudgetMonthChange}
+                    onAssignedToChange={onAssignedToChange}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
                     isSelected={selectedIds.has(t.id)}
                     onSelect={handleSelectTransaction}
                     showCheckbox={isSelectionMode}
@@ -259,6 +329,17 @@ export const TransactionList = memo(function TransactionList({
             {filteredTransactions.length} transaction(s) affichée(s)
           </p>
         </>
+      )}
+
+      {/* Edit Modal */}
+      {editingTransaction && (
+        <EditTransactionModal
+          transaction={editingTransaction}
+          categories={categories}
+          onSave={handleSaveEdit}
+          onDelete={handleDelete}
+          onClose={() => setEditingTransaction(null)}
+        />
       )}
     </Card>
   )

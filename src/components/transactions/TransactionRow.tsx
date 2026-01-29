@@ -1,5 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
+import { Pencil, Trash2, MoreVertical, User } from 'lucide-react'
 import type { Transaction, Category } from '@/types'
 import { formatMoney, formatDate } from '@utils/formatters'
 import { COLORS } from '@utils/constants'
@@ -8,8 +9,12 @@ interface TransactionRowProps {
   transaction: Transaction
   category?: Category
   allCategories?: Category[]
+  householdMembers?: string[]
   onCategoryChange?: (transactionId: string, categoryId: string) => void
   onBudgetMonthChange?: (transactionId: string, budgetMonth: string | undefined) => void
+  onAssignedToChange?: (transactionId: string, assignedTo: string | undefined) => void
+  onEdit?: (transaction: Transaction) => void
+  onDelete?: (transactionId: string) => void
   isSelected?: boolean
   onSelect?: (transactionId: string, selected: boolean) => void
   showCheckbox?: boolean
@@ -19,23 +24,35 @@ export const TransactionRow = memo(function TransactionRow({
   transaction,
   category,
   allCategories = [],
+  householdMembers = [],
   onCategoryChange,
   onBudgetMonthChange,
+  onAssignedToChange,
+  onEdit,
+  onDelete,
   isSelected = false,
   onSelect,
   showCheckbox = false,
 }: TransactionRowProps) {
-  const { id, date, description, type, amount, category: categoryId, budgetMonth } = transaction
+  const { id, date, description, type, amount, category: categoryId, budgetMonth, assignedTo } = transaction
   const isCredit = amount > 0
   const color = category?.color || COLORS[categoryId] || COLORS.other
   const [showDropdown, setShowDropdown] = useState(false)
   const [showMonthPicker, setShowMonthPicker] = useState(false)
+  const [showActions, setShowActions] = useState(false)
+  const [showPersonPicker, setShowPersonPicker] = useState(false)
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 })
   const [monthPickerPosition, setMonthPickerPosition] = useState({ top: 0, left: 0 })
+  const [actionsPosition, setActionsPosition] = useState({ top: 0, left: 0 })
+  const [personPickerPosition, setPersonPickerPosition] = useState({ top: 0, left: 0 })
   const buttonRef = useRef<HTMLButtonElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const dateButtonRef = useRef<HTMLButtonElement>(null)
   const monthPickerRef = useRef<HTMLDivElement>(null)
+  const actionsButtonRef = useRef<HTMLButtonElement>(null)
+  const actionsRef = useRef<HTMLDivElement>(null)
+  const personButtonRef = useRef<HTMLButtonElement>(null)
+  const personPickerRef = useRef<HTMLDivElement>(null)
 
   // Get the natural month from the transaction date
   const naturalMonth = date.substring(0, 7) // YYYY-MM
@@ -43,7 +60,7 @@ export const TransactionRow = memo(function TransactionRow({
 
   // Close dropdown when clicking outside
   useEffect(() => {
-    if (!showDropdown && !showMonthPicker) return
+    if (!showDropdown && !showMonthPicker && !showActions && !showPersonPicker) return
 
     const handleClickOutside = (e: MouseEvent) => {
       // Handle category dropdown
@@ -62,6 +79,22 @@ export const TransactionRow = memo(function TransactionRow({
       ) {
         setShowMonthPicker(false)
       }
+      // Handle actions menu
+      if (
+        showActions &&
+        actionsRef.current && !actionsRef.current.contains(e.target as Node) &&
+        actionsButtonRef.current && !actionsButtonRef.current.contains(e.target as Node)
+      ) {
+        setShowActions(false)
+      }
+      // Handle person picker
+      if (
+        showPersonPicker &&
+        personPickerRef.current && !personPickerRef.current.contains(e.target as Node) &&
+        personButtonRef.current && !personButtonRef.current.contains(e.target as Node)
+      ) {
+        setShowPersonPicker(false)
+      }
     }
 
     // Close on scroll (but not if scrolling inside the dropdown)
@@ -72,8 +105,13 @@ export const TransactionRow = memo(function TransactionRow({
       if (monthPickerRef.current && monthPickerRef.current.contains(e.target as Node)) {
         return // Don't close if scrolling inside month picker
       }
+      if (personPickerRef.current && personPickerRef.current.contains(e.target as Node)) {
+        return // Don't close if scrolling inside person picker
+      }
       setShowDropdown(false)
       setShowMonthPicker(false)
+      setShowActions(false)
+      setShowPersonPicker(false)
     }
 
     document.addEventListener('mousedown', handleClickOutside)
@@ -82,7 +120,18 @@ export const TransactionRow = memo(function TransactionRow({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('scroll', handleScroll, true)
     }
-  }, [showDropdown, showMonthPicker])
+  }, [showDropdown, showMonthPicker, showActions, showPersonPicker])
+
+  const handleActionsClick = useCallback(() => {
+    if (actionsButtonRef.current) {
+      const rect = actionsButtonRef.current.getBoundingClientRect()
+      setActionsPosition({
+        top: rect.bottom + 4,
+        left: rect.right - 120,
+      })
+      setShowActions(prev => !prev)
+    }
+  }, [])
 
   const handleCategoryClick = useCallback(() => {
     if (onCategoryChange && allCategories.length > 0 && buttonRef.current) {
@@ -140,6 +189,24 @@ export const TransactionRow = memo(function TransactionRow({
 
     return months
   }, [date, naturalMonth])
+
+  const handlePersonClick = useCallback(() => {
+    if (onAssignedToChange && householdMembers.length > 0 && personButtonRef.current) {
+      const rect = personButtonRef.current.getBoundingClientRect()
+      setPersonPickerPosition({
+        top: rect.bottom + 4,
+        left: rect.left,
+      })
+      setShowPersonPicker(prev => !prev)
+    }
+  }, [onAssignedToChange, householdMembers.length])
+
+  const handlePersonSelect = useCallback((person: string | undefined) => {
+    if (onAssignedToChange) {
+      onAssignedToChange(id, person)
+    }
+    setShowPersonPicker(false)
+  }, [onAssignedToChange, id])
 
   const handleCategorySelect = (newCategoryId: string) => {
     if (onCategoryChange) {
@@ -278,6 +345,114 @@ export const TransactionRow = memo(function TransactionRow({
         {isCredit ? '+' : ''}
         {formatMoney(amount)}
       </td>
+
+      {/* Person assignment - only show if household members are configured */}
+      {householdMembers.length > 0 && (
+        <td className="py-3 px-2">
+          <button
+            ref={personButtonRef}
+            onClick={handlePersonClick}
+            disabled={!onAssignedToChange}
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs transition-all ${
+              assignedTo
+                ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
+                : 'bg-gray-700/50 text-gray-500 hover:bg-gray-700 hover:text-gray-300'
+            } ${onAssignedToChange ? 'cursor-pointer' : ''}`}
+            title={assignedTo ? `Imputé à ${assignedTo}` : 'Cliquez pour assigner'}
+          >
+            <User className="w-3 h-3" />
+            <span className="max-w-[60px] truncate">
+              {assignedTo || '—'}
+            </span>
+          </button>
+
+          {/* Person picker dropdown */}
+          {showPersonPicker && createPortal(
+            <div
+              ref={personPickerRef}
+              className="fixed z-[100] bg-gray-800 border border-gray-600 rounded-lg shadow-xl min-w-[140px] py-1"
+              style={{
+                top: personPickerPosition.top,
+                left: personPickerPosition.left,
+              }}
+            >
+              <button
+                onClick={() => handlePersonSelect(undefined)}
+                className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-700 flex items-center gap-2 ${
+                  !assignedTo ? 'bg-gray-700 text-purple-400' : 'text-gray-400'
+                }`}
+              >
+                <span className="text-gray-500">—</span>
+                <span>Non assigné</span>
+              </button>
+              {householdMembers.map((person) => (
+                <button
+                  key={person}
+                  onClick={() => handlePersonSelect(person)}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-700 flex items-center gap-2 ${
+                    assignedTo === person ? 'bg-gray-700 text-purple-400' : 'text-white'
+                  }`}
+                >
+                  <User className="w-3 h-3 text-purple-400" />
+                  <span>{person}</span>
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
+        </td>
+      )}
+
+      {(onEdit || onDelete) && (
+        <td className="py-3 pl-2 w-10">
+          <button
+            ref={actionsButtonRef}
+            onClick={handleActionsClick}
+            className="p-1.5 hover:bg-gray-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+            title="Actions"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+
+          {/* Actions menu */}
+          {showActions && createPortal(
+            <div
+              ref={actionsRef}
+              className="fixed z-[100] bg-gray-800 border border-gray-600 rounded-lg shadow-xl min-w-[120px] py-1"
+              style={{
+                top: actionsPosition.top,
+                left: actionsPosition.left,
+              }}
+            >
+              {onEdit && (
+                <button
+                  onClick={() => {
+                    setShowActions(false)
+                    onEdit(transaction)
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 flex items-center gap-2 text-white"
+                >
+                  <Pencil className="w-4 h-4 text-blue-400" />
+                  Modifier
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={() => {
+                    setShowActions(false)
+                    onDelete(id)
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 flex items-center gap-2 text-red-400"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Supprimer
+                </button>
+              )}
+            </div>,
+            document.body
+          )}
+        </td>
+      )}
     </tr>
   )
 })

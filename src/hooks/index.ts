@@ -6,3 +6,4 @@ export {
   useCashFlow,
   useUnusualTransactions,
 } from './useFinancialInsights'
+export { useFinancialAdvisor } from './useFinancialAdvisor'

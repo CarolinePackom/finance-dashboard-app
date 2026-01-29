@@ -53,10 +53,15 @@ export async function createAutoBackup(): Promise<void> {
     const transactions = await db.transactions.toArray()
     const categories = await db.categories.toArray()
     const rules = await db.rules.toArray()
+    const categoryBudgets = await db.categoryBudgets.toArray()
+    const monthlyBudgetConfigs = await db.monthlyBudgetConfigs.toArray()
+    const savingsGoals = await db.savingsGoals.toArray()
+    const assetAccounts = await db.assetAccounts.toArray()
+    const settings = await db.settings.toArray()
 
-    // Only backup if there's data
-    if (transactions.length === 0) {
-      console.log('⏭️ No transactions to backup')
+    // Only backup if there's data (transactions OR patrimoine)
+    if (transactions.length === 0 && assetAccounts.length === 0) {
+      console.log('⏭️ No data to backup')
       return
     }
 
@@ -66,6 +71,11 @@ export async function createAutoBackup(): Promise<void> {
       transactions,
       categories,
       rules,
+      categoryBudgets,
+      monthlyBudgetConfigs,
+      savingsGoals,
+      assetAccounts,
+      settings: settings.map(s => ({ key: s.key, value: s.value })),
     }
 
     const json = JSON.stringify(backup)
@@ -79,7 +89,7 @@ export async function createAutoBackup(): Promise<void> {
     }
 
     localStorage.setItem(BACKUP_KEY, compressed)
-    console.log(`✅ Auto-backup created: ${transactions.length} transactions (${sizeInMB.toFixed(2)}MB)`)
+    console.log(`✅ Auto-backup created: ${transactions.length} transactions, ${assetAccounts.length} accounts (${sizeInMB.toFixed(2)}MB)`)
   } catch (err) {
     console.error('❌ Failed to create auto-backup:', err)
   }
@@ -95,7 +105,7 @@ export function hasBackup(): boolean {
 /**
  * Get backup info without fully parsing
  */
-export function getBackupInfo(): { savedAt: string; transactionCount: number } | null {
+export function getBackupInfo(): { savedAt: string; transactionCount: number; accountCount?: number } | null {
   try {
     const compressed = localStorage.getItem(BACKUP_KEY)
     if (!compressed) return null
@@ -105,7 +115,8 @@ export function getBackupInfo(): { savedAt: string; transactionCount: number } |
 
     return {
       savedAt: backup.savedAt,
-      transactionCount: backup.transactions.length,
+      transactionCount: (backup.transactions?.length || 0) + (backup.assetAccounts?.length || 0),
+      accountCount: backup.assetAccounts?.length || 0,
     }
   } catch {
     return null
@@ -125,32 +136,63 @@ export async function restoreFromBackup(): Promise<{ transactions: number; resto
     const json = decompress(compressed)
     const backup = JSON.parse(json) as BackupData
 
-    if (!backup.version || !backup.transactions) {
+    if (!backup.version) {
       console.error('❌ Invalid backup format')
       return { transactions: 0, restored: false }
     }
 
-    // Clear and restore
+    // Clear and restore core tables
     await db.transactions.clear()
     await db.categories.clear()
     await db.rules.clear()
 
-    if (backup.categories.length > 0) {
+    if (backup.categories && backup.categories.length > 0) {
       await db.categories.bulkAdd(backup.categories)
     }
 
-    if (backup.transactions.length > 0) {
+    if (backup.transactions && backup.transactions.length > 0) {
       await db.transactions.bulkAdd(backup.transactions)
     }
 
-    if (backup.rules.length > 0) {
+    if (backup.rules && backup.rules.length > 0) {
       await db.rules.bulkAdd(backup.rules)
     }
 
-    console.log(`✅ Restored ${backup.transactions.length} transactions from backup`)
+    // Restore budget data
+    if (backup.categoryBudgets && backup.categoryBudgets.length > 0) {
+      await db.categoryBudgets.clear()
+      await db.categoryBudgets.bulkAdd(backup.categoryBudgets)
+    }
+
+    if (backup.monthlyBudgetConfigs && backup.monthlyBudgetConfigs.length > 0) {
+      await db.monthlyBudgetConfigs.clear()
+      await db.monthlyBudgetConfigs.bulkAdd(backup.monthlyBudgetConfigs)
+    }
+
+    if (backup.savingsGoals && backup.savingsGoals.length > 0) {
+      await db.savingsGoals.clear()
+      await db.savingsGoals.bulkAdd(backup.savingsGoals)
+    }
+
+    // Restore patrimoine data
+    if (backup.assetAccounts && backup.assetAccounts.length > 0) {
+      await db.assetAccounts.clear()
+      await db.assetAccounts.bulkAdd(backup.assetAccounts)
+    }
+
+    // Restore settings
+    if (backup.settings && backup.settings.length > 0) {
+      await db.settings.clear()
+      for (const setting of backup.settings) {
+        await db.settings.add({ id: setting.key, key: setting.key, value: setting.value })
+      }
+    }
+
+    const totalItems = (backup.transactions?.length || 0) + (backup.assetAccounts?.length || 0)
+    console.log(`✅ Restored ${backup.transactions?.length || 0} transactions, ${backup.assetAccounts?.length || 0} accounts from backup`)
 
     return {
-      transactions: backup.transactions.length,
+      transactions: totalItems,
       restored: true,
     }
   } catch (err) {
@@ -174,9 +216,10 @@ export function clearBackup(): void {
 export async function checkAndRestoreIfNeeded(): Promise<boolean> {
   try {
     const transactionCount = await db.transactions.count()
+    const accountCount = await db.assetAccounts.count()
 
-    // If we have data, no need to restore
-    if (transactionCount > 0) {
+    // If we have any data, no need to restore
+    if (transactionCount > 0 || accountCount > 0) {
       return false
     }
 
@@ -190,7 +233,7 @@ export async function checkAndRestoreIfNeeded(): Promise<boolean> {
       return false
     }
 
-    console.log(`🔄 IndexedDB empty but backup found (${backupInfo.transactionCount} transactions from ${backupInfo.savedAt})`)
+    console.log(`🔄 IndexedDB empty but backup found (${backupInfo.transactionCount} items from ${backupInfo.savedAt})`)
 
     const result = await restoreFromBackup()
     return result.restored

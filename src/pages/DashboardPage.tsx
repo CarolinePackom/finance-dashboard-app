@@ -10,6 +10,9 @@ import {
   AlertTriangle,
   PieChart as PieChartIcon,
   ArrowRightLeft,
+  History,
+  Table,
+  Users,
 } from 'lucide-react'
 import { useTransactions } from '@store/TransactionContext'
 import { transactionService } from '@services/db'
@@ -20,6 +23,7 @@ import {
   useRecurringTransactions,
   useCashFlow,
   useUnusualTransactions,
+  useFinancialAdvisor,
 } from '@hooks/index'
 import { Card, CardTitle, useToast } from '@components/common'
 import {
@@ -31,15 +35,19 @@ import {
   UnusualTransactionsList,
   IncomeBreakdown,
   TransactionCalendar,
+  MonthlyOverviewTable,
+  BalanceEvolutionChart,
+  SpendingByPerson,
 } from '@components/dashboard'
 import { LazyExpensesPieChart, LazyDailyBarChart, LazyMonthlyComparisonChart } from '@components/charts'
 import { TransactionList, CategoryFilterButton } from '@components/transactions'
+import { AdvisorPanel } from '@components/advisor'
 import { QuickAddExpense } from '@components/budget/QuickAddExpense'
 import { formatDate } from '@utils/formatters'
 import { categoryBudgetService, settingsService } from '@services/db'
 import { useLiveQuery } from 'dexie-react-hooks'
 
-type DashboardTab = 'overview' | 'calendar' | 'analysis' | 'transactions'
+type DashboardTab = 'overview' | 'history' | 'calendar' | 'analysis' | 'transactions'
 
 export function DashboardPage() {
   const { transactions, categories, stats, selectedPeriod, months, bulkUpdateCategory } = useTransactions()
@@ -65,16 +73,26 @@ export function DashboardPage() {
   // Load initial balance for bank balance calculation
   const [initialBalance, setInitialBalance] = useState<number | null>(null)
 
+  // Load household members for expense assignment
+  const [householdMembers, setHouseholdMembers] = useState<string[]>([])
+
   useEffect(() => {
     settingsService.getInitialBalance().then(balance => {
       setInitialBalance(balance)
     })
+    settingsService.get('householdMembers').then(members => {
+      if (Array.isArray(members)) {
+        setHouseholdMembers(members)
+      }
+    })
   }, [])
 
-  // Calculate real bank balance (initial balance + all transactions)
+  // Calculate real bank balance (initial balance + transactions up to today only)
   const bankBalance = useMemo(() => {
     if (initialBalance === null) return null
-    const transactionsTotal = allTransactions.reduce((sum, t) => sum + t.amount, 0)
+    const today = new Date().toISOString().split('T')[0]
+    const pastTransactions = allTransactions.filter(t => t.date <= today)
+    const transactionsTotal = pastTransactions.reduce((sum, t) => sum + t.amount, 0)
     return initialBalance + transactionsTotal
   }, [initialBalance, allTransactions])
 
@@ -101,6 +119,9 @@ export function DashboardPage() {
   const recurringTransactions = useRecurringTransactions(transactions)
   const cashFlow = useCashFlow(transactions)
   const unusualTransactions = useUnusualTransactions(transactions)
+
+  // Financial advisor
+  const advisor = useFinancialAdvisor(allTransactions, categories)
 
   const handleCategoryToggle = useCallback((categoryId: string) => {
     setSelectedCategory((prev) => (prev === categoryId ? null : categoryId))
@@ -148,6 +169,14 @@ export function DashboardPage() {
     toast.success(
       'Mois budgétaire modifié',
       budgetMonth ? `Transaction comptée pour ${new Date(budgetMonth + '-01').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}` : 'Transaction comptée pour son mois naturel'
+    )
+  }, [toast])
+
+  const handleAssignedToChange = useCallback(async (transactionId: string, assignedTo: string | undefined) => {
+    await transactionService.update(transactionId, { assignedTo })
+    toast.success(
+      'Dépense imputée',
+      assignedTo ? `Transaction assignée à ${assignedTo}` : 'Assignation retirée'
     )
   }, [toast])
 
@@ -215,9 +244,10 @@ export function DashboardPage() {
         </div>
 
         {/* Tab navigation */}
-        <div className="flex gap-1 bg-gray-800 p-1 rounded-lg" role="tablist">
+        <div className="flex gap-1 bg-gray-800 p-1 rounded-lg overflow-x-auto" role="tablist">
           {[
             { id: 'overview' as const, label: 'Vue d\'ensemble', icon: PieChartIcon },
+            { id: 'history' as const, label: 'Historique', icon: History },
             { id: 'calendar' as const, label: 'Calendrier', icon: CalendarDays },
             { id: 'analysis' as const, label: 'Analyse', icon: Activity },
             { id: 'transactions' as const, label: 'Transactions', icon: ArrowRightLeft },
@@ -252,6 +282,20 @@ export function DashboardPage() {
       {/* Overview Tab */}
       {activeTab === 'overview' && (
         <>
+          {/* Advisor Panel */}
+          <AdvisorPanel
+            insights={advisor.insights}
+            healthScore={advisor.healthScore}
+            isLoading={advisor.isLoading}
+            aiEnabled={advisor.aiEnabled}
+            aiLoading={advisor.aiLoading}
+            aiError={advisor.aiError}
+            aiInsights={advisor.aiInsights}
+            onToggleAI={advisor.toggleAI}
+            onAskQuestion={advisor.askQuestion}
+            hasApiKey={advisor.hasApiKey}
+          />
+
           {/* Charts row */}
           <div className="grid md:grid-cols-2 gap-4 md:gap-6">
             {/* Expenses pie chart */}
@@ -312,6 +356,19 @@ export function DashboardPage() {
             </Card>
           </div>
 
+          {/* Spending by person (household) */}
+          {householdMembers.length > 0 && (
+            <Card>
+              <CardTitle icon={<Users className="w-5 h-5 text-purple-400" />}>
+                Dépenses par personne
+              </CardTitle>
+              <SpendingByPerson
+                transactions={transactions}
+                householdMembers={householdMembers}
+              />
+            </Card>
+          )}
+
           {/* Monthly comparison */}
           {months.length > 1 && (
             <Card>
@@ -338,9 +395,11 @@ export function DashboardPage() {
                   transactions={filteredTransactions}
                   categories={categories}
                   selectedCategory={selectedCategory}
+                  householdMembers={householdMembers}
                   onClearCategory={handleClearCategory}
                   onCategoryChange={handleCategoryChange}
                   onBudgetMonthChange={handleBudgetMonthChange}
+                  onAssignedToChange={handleAssignedToChange}
                   onBulkCategoryChange={handleBulkCategoryChange}
                 />
               </>
@@ -351,6 +410,42 @@ export function DashboardPage() {
               </Card>
             )}
           </div>
+        </>
+      )}
+
+      {/* History Tab */}
+      {activeTab === 'history' && (
+        <>
+          {/* Balance Evolution Chart */}
+          <Card>
+            <CardTitle icon={<TrendingUp className="w-5 h-5 text-blue-400" />}>
+              Évolution du solde
+            </CardTitle>
+            <p className="text-gray-400 text-sm mb-4">
+              Visualisez l'évolution de votre solde sur les 12 derniers mois
+            </p>
+            <div className="h-80">
+              <BalanceEvolutionChart
+                transactions={allTransactions}
+                initialBalance={initialBalance || 0}
+                monthsToShow={12}
+              />
+            </div>
+          </Card>
+
+          {/* Monthly Overview Table */}
+          <Card>
+            <CardTitle icon={<Table className="w-5 h-5 text-purple-400" />}>
+              Récapitulatif mensuel
+            </CardTitle>
+            <p className="text-gray-400 text-sm mb-4">
+              Détail de vos revenus, dépenses et taux d'épargne par mois
+            </p>
+            <MonthlyOverviewTable
+              transactions={allTransactions}
+              monthsToShow={12}
+            />
+          </Card>
         </>
       )}
 
@@ -451,9 +546,11 @@ export function DashboardPage() {
             transactions={transactions}
             categories={categories}
             selectedCategory={selectedCategory}
+            householdMembers={householdMembers}
             onClearCategory={handleClearCategory}
             onCategoryChange={handleCategoryChange}
             onBudgetMonthChange={handleBudgetMonthChange}
+            onAssignedToChange={handleAssignedToChange}
             onBulkCategoryChange={handleBulkCategoryChange}
           />
         </div>

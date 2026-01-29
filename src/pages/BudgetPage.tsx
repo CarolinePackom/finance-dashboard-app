@@ -7,7 +7,6 @@ import {
   Target,
   Plus,
   Settings,
-  TrendingUp,
   AlertTriangle,
   Check,
   Trash2,
@@ -15,17 +14,23 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ArrowRight,
+  ArrowLeft,
+  List,
+  Link,
+  Landmark,
 } from 'lucide-react'
 import { Card, CardTitle, Button, useToast } from '@components/common'
-import { QuickAddExpense } from '@components/budget'
+import { QuickAddExpense, InlineFixedCharges } from '@components/budget'
 import { useTransactions } from '@store/TransactionContext'
 import {
-  db,
   categoryBudgetService,
   categoryService,
   monthlyBudgetConfigService,
   savingsGoalService,
   settingsService,
+  assetAccountService,
 } from '@services/db'
 import { useAllTransactions } from '@hooks/index'
 import { formatMoney, formatPercent } from '@utils/formatters'
@@ -36,6 +41,7 @@ import type {
   BudgetGroupType,
   Category,
   FixedCharge,
+  AssetAccount,
 } from '@/types'
 
 // Budget groups definition
@@ -66,7 +72,7 @@ function getMonthOffset(baseMonth: string, offset: number): string {
 }
 
 export function BudgetPage() {
-  const { transactions: allContextTransactions, categories, stats, selectedPeriod } = useTransactions()
+  const { categories } = useTransactions()
   const allTransactionsFromHook = useAllTransactions()
   const toast = useToast()
   const [activeTab, setActiveTab] = useState<BudgetTab>('overview')
@@ -82,22 +88,25 @@ export function BudgetPage() {
   const [initialBalance, setInitialBalance] = useState<number | null>(null)
 
   useEffect(() => {
+    let isMounted = true
     settingsService.getInitialBalance().then(balance => {
-      setInitialBalance(balance)
+      if (isMounted) setInitialBalance(balance)
     })
+    return () => { isMounted = false }
   }, [])
 
-  // Calculate real bank balance (initial balance + all transactions)
+  // Calculate real bank balance (initial balance + transactions up to today only)
   const bankBalance = useMemo(() => {
     if (initialBalance === null) return null
-    const transactionsTotal = allTransactionsFromHook.reduce((sum, t) => sum + t.amount, 0)
+    const today = new Date().toISOString().split('T')[0]
+    const pastTransactions = allTransactionsFromHook.filter(t => t.date <= today)
+    const transactionsTotal = pastTransactions.reduce((sum, t) => sum + t.amount, 0)
     return initialBalance + transactionsTotal
   }, [initialBalance, allTransactionsFromHook])
 
   // Check if selected month is current, past, or future
   const isCurrentMonth = selectedBudgetMonth === currentMonth
   const isFutureMonth = selectedBudgetMonth > currentMonth
-  const isPastMonth = selectedBudgetMonth < currentMonth
 
   // Load budget data from database for selected month
   const categoryBudgets = useLiveQuery(() => categoryBudgetService.getAll()) ?? []
@@ -161,14 +170,25 @@ export function BudgetPage() {
     return effectiveBudgetConfig?.monthlyIncome || 0
   }, [effectiveBudgetConfig, isFutureMonth, monthlyActualIncome])
 
-  // Category to group mapping
-  const categoryGroupMap = useMemo(() => {
-    const map = new Map<string, BudgetGroupType>()
-    for (const budget of categoryBudgets) {
-      map.set(budget.categoryId, budget.group)
+  // Get fixed charges from current config
+  const fixedCharges = useMemo(() => {
+    return effectiveBudgetConfig?.fixedCharges || []
+  }, [effectiveBudgetConfig])
+
+  // Handler to update fixed charges
+  const handleFixedChargesChange = useCallback(async (charges: FixedCharge[]) => {
+    const existingConfig = budgetConfig || latestBudgetConfig
+    const configToSave: MonthlyBudgetConfig = {
+      id: existingConfig?.id || `config-${selectedBudgetMonth}`,
+      month: selectedBudgetMonth,
+      monthlyIncome: existingConfig?.monthlyIncome || 0,
+      useActualIncome: existingConfig?.useActualIncome || false,
+      fixedCharges: charges,
+      createdAt: existingConfig?.createdAt || new Date().toISOString(),
     }
-    return map
-  }, [categoryBudgets])
+    await monthlyBudgetConfigService.upsert(configToSave)
+    toast.success('Charges fixes mises à jour', 'Les modifications ont été enregistrées')
+  }, [budgetConfig, latestBudgetConfig, selectedBudgetMonth, toast])
 
   return (
     <div className="space-y-6">
@@ -291,6 +311,8 @@ export function BudgetPage() {
           onConfigureIncome={() => setShowIncomeModal(true)}
           budgetConfig={budgetConfig}
           bankBalance={bankBalance}
+          fixedCharges={fixedCharges}
+          onFixedChargesChange={handleFixedChargesChange}
         />
       )}
 
@@ -325,7 +347,7 @@ export function BudgetPage() {
         <YearlyBudgetView
           savingsGoals={savingsGoals}
           monthlyIncome={monthlyIncome}
-          transactions={transactions}
+          transactions={allTransactionsFromHook}
         />
       )}
 
@@ -393,11 +415,13 @@ interface BudgetOverviewProps {
   onConfigureIncome: () => void
   budgetConfig: MonthlyBudgetConfig | null | undefined
   bankBalance: number | null
+  fixedCharges: FixedCharge[]
+  onFixedChargesChange: (charges: FixedCharge[]) => void
 }
 
 function BudgetOverview({
   monthlyIncome,
-  spendingByGroup,
+  spendingByGroup: _spendingByGroup, // Passed but realSpendingByGroup is calculated internally instead
   categoryBudgets,
   spendingByCategory,
   categories,
@@ -406,20 +430,26 @@ function BudgetOverview({
   onConfigureIncome,
   budgetConfig,
   bankBalance,
+  fixedCharges,
+  onFixedChargesChange,
 }: BudgetOverviewProps) {
   const categoryMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories])
-  const categoryBudgetMap = useMemo(() => new Map(categoryBudgets.map(b => [b.categoryId, b])), [categoryBudgets])
 
   // Calculate total savings progress
-  const totalSavingsTarget = savingsGoals.reduce((sum, g) => sum + g.targetAmount, 0)
   const totalSavingsCurrent = savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0)
 
-  // Calculate REAL spending by group (including manual transactions with budgetGroup)
+  // Calculate REAL spending by group
+  // Rule: anything NOT explicitly in "needs" goes to "wants" by default
   const realSpendingByGroup = useMemo(() => {
     const result = new Map<BudgetGroupType, number>()
     result.set('needs', 0)
     result.set('wants', 0)
     result.set('savings', 0)
+
+    // Get all category IDs explicitly assigned to "needs"
+    const needsCategoryIds = new Set(
+      categoryBudgets.filter(b => b.isActive && b.group === 'needs').map(b => b.categoryId)
+    )
 
     for (const t of transactions) {
       if (t.amount >= 0) continue // Skip income
@@ -433,45 +463,60 @@ function BudgetOverview({
         continue
       }
 
-      // Fall back to category's budget group
-      const budget = categoryBudgetMap.get(t.category)
-      if (budget) {
-        const current = result.get(budget.group) || 0
-        result.set(budget.group, current + amount)
+      // If category is in "needs", add to needs, otherwise add to "wants"
+      if (needsCategoryIds.has(t.category)) {
+        const current = result.get('needs') || 0
+        result.set('needs', current + amount)
+      } else {
+        const current = result.get('wants') || 0
+        result.set('wants', current + amount)
       }
     }
 
     return result
-  }, [transactions, categoryBudgetMap])
+  }, [transactions, categoryBudgets])
 
-  // Find uncategorized spending (not in any budget group)
-  const uncategorizedSpending = useMemo(() => {
-    let total = 0
-    const items: { category: string; amount: number; count: number }[] = []
-    const byCategory = new Map<string, number>()
+  // Calculate total fixed charges (all go to 'needs')
+  const totalFixedCharges = useMemo(() => {
+    return fixedCharges
+      .filter(c => c.isEnabled)
+      .reduce((sum, c) => sum + c.amount, 0)
+  }, [fixedCharges])
 
-    for (const t of transactions) {
-      if (t.amount >= 0) continue // Skip income
-      if (t.budgetGroup) continue // Has explicit group
-
-      const budget = categoryBudgetMap.get(t.category)
-      if (!budget) {
-        const amount = Math.abs(t.amount)
-        total += amount
-        byCategory.set(t.category, (byCategory.get(t.category) || 0) + amount)
-      }
-    }
-
-    for (const [categoryId, amount] of byCategory) {
-      items.push({
-        category: categoryMap.get(categoryId)?.name || categoryId,
-        amount,
-        count: transactions.filter(t => t.category === categoryId && t.amount < 0).length,
+  // Handler to move a category to another group
+  const handleMoveCategoryGroup = useCallback(async (categoryId: string, newGroup: BudgetGroupType) => {
+    const existingBudget = categoryBudgets.find(b => b.categoryId === categoryId)
+    if (existingBudget) {
+      await categoryBudgetService.update(existingBudget.id, { group: newGroup })
+    } else {
+      // Create a new budget entry for this category
+      await categoryBudgetService.add({
+        id: `budget-${categoryId}-${Date.now()}`,
+        categoryId,
+        group: newGroup,
+        monthlyLimit: 0,
+        isActive: true,
+        createdAt: new Date().toISOString(),
       })
     }
+  }, [categoryBudgets])
 
-    return { total, items: items.sort((a, b) => b.amount - a.amount) }
-  }, [transactions, categoryBudgetMap, categoryMap])
+  // Detect orphaned charges (without budgetGroup) for migration
+  const orphanedCharges = useMemo(() =>
+    fixedCharges.filter(c => !c.budgetGroup),
+    [fixedCharges]
+  )
+
+  // Auto-migrate orphaned charges based on categoryId patterns
+  const migrateOrphanedCharges = useCallback(() => {
+    const needsCategories = ['housing', 'telecom', 'transport', 'health', 'bank-fees', 'utilities']
+    const migratedCharges = fixedCharges.map(charge => {
+      if (charge.budgetGroup) return charge
+      const isNeeds = needsCategories.some(cat => charge.categoryId.includes(cat))
+      return { ...charge, budgetGroup: isNeeds ? 'needs' as const : 'wants' as const }
+    })
+    onFixedChargesChange(migratedCharges)
+  }, [fixedCharges, onFixedChargesChange])
 
   // Calculate budgets with limits
   const budgetsByGroup = useMemo(() => {
@@ -534,8 +579,42 @@ function BudgetOverview({
     )
   }
 
+  // Calculate totals for the visual summary
+  const totalExpenses = transactions
+    .filter(t => t.amount < 0)
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0)
+
+  const variableExpenses = totalExpenses - totalFixedCharges
+  const remainingBudget = monthlyIncome - totalExpenses
+
   return (
     <div className="space-y-6">
+      {/* Migration Warning for orphaned charges */}
+      {orphanedCharges.length > 0 && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+              <div>
+                <p className="font-medium text-yellow-400">
+                  {orphanedCharges.length} charge(s) fixe(s) à assigner
+                </p>
+                <p className="text-sm text-gray-400">
+                  Assignez vos charges fixes à "Besoins" ou "Envies" pour un suivi complet
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={migrateOrphanedCharges}
+            >
+              Assigner automatiquement
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* Bank Balance Card - What you actually have */}
       {bankBalance !== null && (
         <Card className={`bg-gradient-to-r ${bankBalance < totalTheoreticalRemaining ? 'from-orange-500/10 to-red-500/10 border-orange-500/30' : 'from-blue-500/10 to-purple-500/10 border-blue-500/30'}`}>
@@ -576,22 +655,69 @@ function BudgetOverview({
         {BUDGET_GROUPS.filter(g => g.id !== 'savings').map(group => {
           const budgetInfo = budgetsByGroup.get(group.id)
           if (!budgetInfo) return null
-          const spent = realSpendingByGroup.get(group.id) || 0
-          const theoreticalRemaining = Math.max(0, budgetInfo.limit - spent)
+
+          // Fixed charges only apply to 'needs'
+          const fixedSpent = group.id === 'needs' ? totalFixedCharges : 0
+          // Variable spending (total - fixed)
+          const totalSpent = realSpendingByGroup.get(group.id) || 0
+          const variableSpent = Math.max(0, totalSpent - fixedSpent)
+
+          const theoreticalRemaining = Math.max(0, budgetInfo.limit - totalSpent)
           const remaining = bankBalance !== null ? getRealisticRemaining(theoreticalRemaining) : theoreticalRemaining
-          const percentUsed = budgetInfo.limit > 0 ? (spent / budgetInfo.limit) * 100 : 0
-          const isOverBudget = spent > budgetInfo.limit
+          const percentUsed = budgetInfo.limit > 0 ? (totalSpent / budgetInfo.limit) * 100 : 0
+          const percentFixed = budgetInfo.limit > 0 ? (fixedSpent / budgetInfo.limit) * 100 : 0
+          const percentVariable = budgetInfo.limit > 0 ? (variableSpent / budgetInfo.limit) * 100 : 0
+          const isOverBudget = totalSpent > budgetInfo.limit
           const isWarning = percentUsed >= 80 && percentUsed < 100
           const isLimitedByBalance = bankBalance !== null && remaining < theoreticalRemaining
 
-          // Get category breakdown
-          const groupBudgets = categoryBudgets
-            .filter(b => b.isActive && b.group === group.id)
-            .sort((a, b) => {
-              const spentA = spendingByCategory.get(a.categoryId) || 0
-              const spentB = spendingByCategory.get(b.categoryId) || 0
-              return spentB - spentA
-            })
+          // Get category breakdown for variable spending
+          // For "needs": only explicitly assigned categories
+          // For "wants": ALL categories with spending that are NOT in "needs" (default behavior)
+          const needsCategoryIds = new Set(
+            categoryBudgets.filter(b => b.isActive && b.group === 'needs').map(b => b.categoryId)
+          )
+
+          let displayCategories: Array<{ categoryId: string; budget: CategoryBudget | null; spent: number }>
+
+          if (group.id === 'needs') {
+            // Needs: only explicitly assigned categories
+            displayCategories = categoryBudgets
+              .filter(b => b.isActive && b.group === 'needs')
+              .map(b => ({
+                categoryId: b.categoryId,
+                budget: b,
+                spent: spendingByCategory.get(b.categoryId) || 0,
+              }))
+          } else {
+            // Wants: explicitly configured wants + all spending not in needs
+            const wantsBudgetCategoryIds = new Set(
+              categoryBudgets.filter(b => b.isActive && b.group === 'wants').map(b => b.categoryId)
+            )
+
+            // Start with explicitly configured wants categories
+            const configuredWants = categoryBudgets
+              .filter(b => b.isActive && b.group === 'wants')
+              .map(b => ({
+                categoryId: b.categoryId,
+                budget: b,
+                spent: spendingByCategory.get(b.categoryId) || 0,
+              }))
+
+            // Add categories with spending that are NOT in needs and NOT already in configured wants
+            const unconfiguredSpending = Array.from(spendingByCategory.entries())
+              .filter(([catId]) => !needsCategoryIds.has(catId) && !wantsBudgetCategoryIds.has(catId))
+              .map(([catId, spent]) => ({
+                categoryId: catId,
+                budget: null,
+                spent,
+              }))
+
+            displayCategories = [...configuredWants, ...unconfiguredSpending]
+          }
+
+          // Sort by amount spent (highest first)
+          displayCategories.sort((a, b) => b.spent - a.spent)
 
           return (
             <Card
@@ -604,36 +730,48 @@ function BudgetOverview({
                   : ''
               }`}
             >
-              {/* Header */}
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="w-12 h-12 rounded-xl flex items-center justify-center"
-                    style={{ backgroundColor: `${group.color}20` }}
-                  >
-                    {group.id === 'needs' ? (
-                      <Wallet className="w-6 h-6" style={{ color: group.color }} />
-                    ) : (
-                      <Target className="w-6 h-6" style={{ color: group.color }} />
-                    )}
+              {/* Header with prominent budget target */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-10 h-10 rounded-xl flex items-center justify-center"
+                      style={{ backgroundColor: `${group.color}20` }}
+                    >
+                      {group.id === 'needs' ? (
+                        <Wallet className="w-5 h-5" style={{ color: group.color }} />
+                      ) : (
+                        <Target className="w-5 h-5" style={{ color: group.color }} />
+                      )}
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">{group.name}</h3>
+                      <p className="text-xs text-gray-400">{group.targetPercent}% du revenu</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">{group.name}</h3>
-                    <p className="text-xs text-gray-400">{group.targetPercent}% du revenu</p>
-                  </div>
+                  {isOverBudget && (
+                    <div className="flex items-center gap-1 px-2 py-1 bg-red-500/20 rounded-lg">
+                      <AlertTriangle className="w-4 h-4 text-red-400" />
+                      <span className="text-xs text-red-400 font-medium">Dépassé</span>
+                    </div>
+                  )}
+                  {isWarning && !isOverBudget && (
+                    <div className="flex items-center gap-1 px-2 py-1 bg-yellow-500/20 rounded-lg">
+                      <AlertTriangle className="w-4 h-4 text-yellow-400" />
+                      <span className="text-xs text-yellow-400 font-medium">Attention</span>
+                    </div>
+                  )}
                 </div>
-                {isOverBudget && (
-                  <div className="flex items-center gap-1 px-2 py-1 bg-red-500/20 rounded-lg">
-                    <AlertTriangle className="w-4 h-4 text-red-400" />
-                    <span className="text-xs text-red-400 font-medium">Dépassé</span>
-                  </div>
-                )}
-                {isWarning && !isOverBudget && (
-                  <div className="flex items-center gap-1 px-2 py-1 bg-yellow-500/20 rounded-lg">
-                    <AlertTriangle className="w-4 h-4 text-yellow-400" />
-                    <span className="text-xs text-yellow-400 font-medium">Attention</span>
-                  </div>
-                )}
+                {/* Budget Target Banner */}
+                <div
+                  className="px-4 py-2 rounded-lg flex items-center justify-between"
+                  style={{ backgroundColor: `${group.color}15`, borderLeft: `4px solid ${group.color}` }}
+                >
+                  <span className="text-sm text-gray-300">Budget {group.targetPercent}%</span>
+                  <span className="text-xl font-bold" style={{ color: group.color }}>
+                    {formatMoney(budgetInfo.budget)}
+                  </span>
+                </div>
               </div>
 
               {/* Main Number - What's LEFT (realistic based on bank balance) */}
@@ -650,7 +788,7 @@ function BudgetOverview({
                     ? 'text-yellow-400'
                     : 'text-white'
                 }`}>
-                  {isOverBudget ? formatMoney(spent - budgetInfo.limit) : formatMoney(remaining)}
+                  {isOverBudget ? formatMoney(totalSpent - budgetInfo.limit) : formatMoney(remaining)}
                 </p>
                 {isLimitedByBalance && !isOverBudget && (
                   <p className="text-xs text-orange-400 mt-1">
@@ -664,16 +802,30 @@ function BudgetOverview({
                 )}
               </div>
 
-              {/* Progress Bar */}
+              {/* Stacked Progress Bar - Fixed (dark) + Variable (light) */}
               <div className="mb-4">
-                <div className="h-4 bg-gray-700 rounded-full overflow-hidden relative">
-                  <div
-                    className="h-full rounded-full transition-all duration-500 relative"
-                    style={{
-                      width: `${Math.min(percentUsed, 100)}%`,
-                      backgroundColor: isOverBudget ? '#ef4444' : isWarning ? '#f59e0b' : group.color,
-                    }}
-                  />
+                <div className="h-4 bg-gray-700 rounded-full overflow-hidden relative flex">
+                  {/* Fixed charges portion (darker) */}
+                  {percentFixed > 0 && (
+                    <div
+                      className="h-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(percentFixed, 100)}%`,
+                        backgroundColor: isOverBudget ? '#b91c1c' : `${group.color}`,
+                        opacity: 0.7,
+                      }}
+                    />
+                  )}
+                  {/* Variable spending portion (lighter) */}
+                  {percentVariable > 0 && (
+                    <div
+                      className="h-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(percentVariable, 100 - percentFixed)}%`,
+                        backgroundColor: isOverBudget ? '#ef4444' : isWarning ? '#f59e0b' : group.color,
+                      }}
+                    />
+                  )}
                   {/* Warning threshold marker at 80% */}
                   <div
                     className="absolute top-0 bottom-0 w-0.5 bg-yellow-500/50"
@@ -682,15 +834,27 @@ function BudgetOverview({
                 </div>
                 <div className="flex justify-between text-xs mt-1">
                   <span className="text-gray-500">0 €</span>
-                  <span className={`font-medium ${isOverBudget ? 'text-red-400' : ''}`}>
-                    {formatPercent(percentUsed, 0)}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {fixedSpent > 0 && (
+                      <span className="text-gray-400">
+                        Fixe: {formatMoney(fixedSpent)}
+                      </span>
+                    )}
+                    {variableSpent > 0 && (
+                      <span className="text-gray-400">
+                        Variable: {formatMoney(variableSpent)}
+                      </span>
+                    )}
+                    <span className={`font-medium ${isOverBudget ? 'text-red-400' : ''}`}>
+                      {formatPercent(percentUsed, 0)}
+                    </span>
+                  </div>
                   <span className="text-gray-500">{formatMoney(budgetInfo.limit)}</span>
                 </div>
               </div>
 
               {/* Budget vs Spent Summary */}
-              <div className="grid grid-cols-2 gap-4 p-3 bg-gray-800/30 rounded-lg mb-4">
+              <div className="grid grid-cols-3 gap-3 p-3 bg-gray-800/30 rounded-lg mb-4">
                 <div>
                   <p className="text-xs text-gray-500 mb-0.5">Budget</p>
                   <p className="text-lg font-semibold text-white">{formatMoney(budgetInfo.limit)}</p>
@@ -698,57 +862,117 @@ function BudgetOverview({
                 <div>
                   <p className="text-xs text-gray-500 mb-0.5">Dépensé</p>
                   <p className={`text-lg font-semibold ${isOverBudget ? 'text-red-400' : 'text-white'}`}>
-                    {formatMoney(spent)}
+                    {formatMoney(totalSpent)}
+                  </p>
+                  {fixedSpent > 0 && variableSpent > 0 && (
+                    <p className="text-xs text-gray-500">
+                      {formatMoney(fixedSpent)} fixe + {formatMoney(variableSpent)} var.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 mb-0.5">Reste</p>
+                  <p className={`text-lg font-semibold ${isOverBudget ? 'text-red-400' : 'text-green-400'}`}>
+                    {isOverBudget ? `-${formatMoney(totalSpent - budgetInfo.limit)}` : formatMoney(budgetInfo.limit - totalSpent)}
                   </p>
                 </div>
               </div>
 
-              {/* Category Breakdown */}
-              {groupBudgets.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Par catégorie</p>
-                  {groupBudgets.slice(0, 5).map(budget => {
-                    const category = categoryMap.get(budget.categoryId)
-                    const catSpent = spendingByCategory.get(budget.categoryId) || 0
-                    const catPercent = budget.monthlyLimit > 0 ? (catSpent / budget.monthlyLimit) * 100 : 0
-                    const catRemaining = budget.monthlyLimit - catSpent
-                    const catOver = catSpent > budget.monthlyLimit
+              {/* Fixed Charges Section - Only for Besoins */}
+              {group.id === 'needs' && (
+                <div className="mb-4 p-3 bg-gray-800/30 rounded-lg">
+                  <InlineFixedCharges
+                    charges={fixedCharges}
+                    budgetGroup={group.id}
+                    categories={categories}
+                    onChange={onFixedChargesChange}
+                    groupColor={group.color}
+                  />
+                </div>
+              )}
+
+              {/* Categories with spending */}
+              {displayCategories.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-2">
+                      <List className="w-3 h-3" />
+                      {group.id === 'needs' ? 'Dépenses variables' : 'Dépenses'}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      dépensé{group.id === 'needs' ? ' / budget' : ''}
+                    </p>
+                  </div>
+                  {displayCategories.map(item => {
+                    const category = categoryMap.get(item.categoryId)
+                    const monthlyLimit = item.budget?.monthlyLimit || 0
+                    const catPercent = monthlyLimit > 0 ? (item.spent / monthlyLimit) * 100 : 0
+                    const catOver = monthlyLimit > 0 && item.spent > monthlyLimit
+                    const otherGroup = group.id === 'needs' ? 'wants' : 'needs'
+                    const otherGroupName = group.id === 'needs' ? 'Envies' : 'Besoins'
 
                     return (
-                      <div key={budget.id} className="flex items-center gap-3">
-                        <div
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: category?.color || '#94a3b8' }}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm truncate">{category?.name || budget.categoryId}</span>
-                            <span className={`text-xs font-medium ${catOver ? 'text-red-400' : catRemaining < 50 ? 'text-yellow-400' : 'text-green-400'}`}>
-                              {catRemaining >= 0 ? `${formatMoney(catRemaining)} restant` : `${formatMoney(Math.abs(catRemaining))} dépassé`}
-                            </span>
+                      <div key={item.categoryId} className="p-2 bg-gray-800/30 rounded-lg group">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="w-3 h-3 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: category?.color || '#94a3b8' }}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-medium text-white truncate">
+                                {category?.name || item.categoryId}
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-sm font-bold ${catOver ? 'text-red-400' : 'text-white'}`}>
+                                  {formatMoney(item.spent)}
+                                </span>
+                                {group.id === 'needs' && (
+                                  <>
+                                    <span className="text-gray-500">/</span>
+                                    <span className="text-sm text-gray-400">
+                                      {monthlyLimit > 0 ? formatMoney(monthlyLimit) : '—'}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            {group.id === 'needs' && monthlyLimit > 0 && (
+                              <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all"
+                                  style={{
+                                    width: `${Math.min(catPercent, 100)}%`,
+                                    backgroundColor: catOver ? '#ef4444' : catPercent > 80 ? '#f59e0b' : category?.color || '#94a3b8',
+                                  }}
+                                />
+                              </div>
+                            )}
                           </div>
-                          <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `${Math.min(catPercent, 100)}%`,
-                                backgroundColor: catOver ? '#ef4444' : category?.color || '#94a3b8',
-                              }}
-                            />
-                          </div>
+                          <button
+                            onClick={() => handleMoveCategoryGroup(item.categoryId, otherGroup)}
+                            className="p-1.5 bg-gray-700 hover:bg-purple-500/30 rounded transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                            title={`Déplacer vers ${otherGroupName}`}
+                          >
+                            {group.id === 'needs' ? (
+                              <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
+                            ) : (
+                              <ArrowLeft className="w-3.5 h-3.5 text-purple-400" />
+                            )}
+                          </button>
                         </div>
                       </div>
                     )
                   })}
-                  {groupBudgets.length > 5 && (
-                    <p className="text-xs text-gray-500 text-center">
-                      +{groupBudgets.length - 5} autres catégories
-                    </p>
-                  )}
                 </div>
               )}
 
-              {groupBudgets.length === 0 && (
+              {displayCategories.length === 0 && group.id === 'wants' && (
+                <p className="text-sm text-gray-500 text-center py-2">
+                  Aucune dépense ce mois-ci
+                </p>
+              )}
+              {displayCategories.length === 0 && group.id === 'needs' && (
                 <p className="text-sm text-gray-500 text-center py-2">
                   Configurez vos catégories dans l'onglet "Catégories"
                 </p>
@@ -757,36 +981,6 @@ function BudgetOverview({
           )
         })}
       </div>
-
-      {/* Uncategorized Spending Warning */}
-      {uncategorizedSpending.total > 0 && (
-        <Card className="border-orange-500/50 bg-orange-500/5">
-          <div className="flex items-start gap-3">
-            <div className="p-2 bg-orange-500/20 rounded-lg">
-              <AlertTriangle className="w-5 h-5 text-orange-400" />
-            </div>
-            <div className="flex-1">
-              <h4 className="font-medium text-orange-400 mb-1">
-                Dépenses non budgétisées : {formatMoney(uncategorizedSpending.total)}
-              </h4>
-              <p className="text-sm text-gray-400 mb-3">
-                Ces dépenses ne sont pas incluses dans vos groupes Besoins/Envies.
-                Assignez-les dans l'onglet "Catégories" pour un suivi complet.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {uncategorizedSpending.items.slice(0, 5).map(item => (
-                  <span
-                    key={item.category}
-                    className="px-2 py-1 bg-gray-700 rounded text-xs text-gray-300"
-                  >
-                    {item.category}: {formatMoney(item.amount)}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
 
       {/* Épargne Card */}
       <Card>
@@ -851,6 +1045,140 @@ function BudgetOverview({
         )}
       </Card>
 
+      {/* VISUAL MONEY FLOW SUMMARY */}
+      <Card className="bg-gradient-to-br from-gray-800 to-gray-900 border-2 border-gray-700">
+        <div className="text-center mb-4">
+          <h2 className="text-lg font-bold text-white">Où va ton argent ce mois-ci ?</h2>
+          <p className="text-xs text-gray-400">Basé sur {transactions.filter(t => t.amount < 0).length} transactions importées</p>
+        </div>
+
+        {/* Visual Flow */}
+        <div className="relative">
+          {/* Step 1: Income */}
+          <div className="flex items-center gap-4 mb-2">
+            <div className="w-32 text-right">
+              <span className="text-sm text-gray-400">Revenus</span>
+            </div>
+            <div className="flex-1 h-10 bg-gray-700 rounded-lg overflow-hidden relative">
+              <div
+                className="h-full bg-gradient-to-r from-green-500 to-green-400 flex items-center justify-end pr-3"
+                style={{ width: '100%' }}
+              >
+                <span className="text-white font-bold text-lg">+{formatMoney(monthlyIncome)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Arrow down */}
+          <div className="flex items-center gap-4 mb-2">
+            <div className="w-32" />
+            <div className="flex-1 flex justify-center">
+              <ChevronDown className="w-6 h-6 text-gray-500" />
+            </div>
+          </div>
+
+          {/* Step 2: Fixed Charges */}
+          {totalFixedCharges > 0 && (
+            <>
+              <div className="flex items-center gap-4 mb-2">
+                <div className="w-32 text-right">
+                  <span className="text-sm text-gray-400">Charges fixes</span>
+                </div>
+                <div className="flex-1 h-8 bg-gray-700 rounded-lg overflow-hidden relative">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-600 to-blue-500 flex items-center justify-end pr-3"
+                    style={{ width: `${Math.min((totalFixedCharges / monthlyIncome) * 100, 100)}%` }}
+                  >
+                    <span className="text-white font-semibold">-{formatMoney(totalFixedCharges)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Arrow down */}
+              <div className="flex items-center gap-4 mb-2">
+                <div className="w-32" />
+                <div className="flex-1 flex justify-center">
+                  <ChevronDown className="w-6 h-6 text-gray-500" />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Step 3: Variable Expenses (the actual spending) */}
+          <div className="flex items-center gap-4 mb-2">
+            <div className="w-32 text-right">
+              <span className="text-sm text-gray-400">Dépenses</span>
+            </div>
+            <div className="flex-1 h-10 bg-gray-700 rounded-lg overflow-hidden relative">
+              <div
+                className="h-full bg-gradient-to-r from-red-600 to-red-500 flex items-center justify-end pr-3"
+                style={{ width: `${Math.min((variableExpenses / monthlyIncome) * 100, 100)}%` }}
+              >
+                <span className="text-white font-bold text-lg">-{formatMoney(variableExpenses)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Arrow down */}
+          <div className="flex items-center gap-4 mb-2">
+            <div className="w-32" />
+            <div className="flex-1 flex justify-center">
+              <ChevronDown className="w-6 h-6 text-gray-500" />
+            </div>
+          </div>
+
+          {/* Step 4: Remaining */}
+          <div className="flex items-center gap-4">
+            <div className="w-32 text-right">
+              <span className="text-sm font-medium text-white">RESTE</span>
+            </div>
+            <div className="flex-1 h-12 bg-gray-700 rounded-lg overflow-hidden relative border-2 border-dashed border-gray-600">
+              <div
+                className={`h-full flex items-center justify-end pr-3 ${
+                  remainingBudget >= 0
+                    ? 'bg-gradient-to-r from-emerald-600 to-emerald-500'
+                    : 'bg-gradient-to-r from-red-700 to-red-600'
+                }`}
+                style={{ width: `${Math.min(Math.max((remainingBudget / monthlyIncome) * 100, 0), 100)}%` }}
+              >
+              </div>
+              <span className={`absolute right-3 top-1/2 -translate-y-1/2 font-bold text-xl ${
+                remainingBudget >= 0 ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {remainingBudget >= 0 ? '' : '-'}{formatMoney(Math.abs(remainingBudget))}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Summary equation */}
+        <div className="mt-6 pt-4 border-t border-gray-700 flex flex-wrap justify-center items-center gap-2 text-sm">
+          <span className="px-3 py-1 bg-green-500/20 text-green-400 rounded-full font-medium">
+            {formatMoney(monthlyIncome)}
+          </span>
+          <span className="text-gray-500">−</span>
+          {totalFixedCharges > 0 && (
+            <>
+              <span className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full font-medium">
+                {formatMoney(totalFixedCharges)} fixes
+              </span>
+              <span className="text-gray-500">−</span>
+            </>
+          )}
+          <span className="px-3 py-1 bg-red-500/20 text-red-400 rounded-full font-medium">
+            {formatMoney(variableExpenses)} dépensé
+          </span>
+          <span className="text-gray-500">=</span>
+          <span className={`px-3 py-1 rounded-full font-bold ${
+            remainingBudget >= 0
+              ? 'bg-emerald-500/20 text-emerald-400'
+              : 'bg-red-500/20 text-red-400'
+          }`}>
+            {remainingBudget >= 0 ? '' : '-'}{formatMoney(Math.abs(remainingBudget))} reste
+          </span>
+        </div>
+      </Card>
+
       {/* Income Config Reminder */}
       {budgetConfig && (
         <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
@@ -867,189 +1195,7 @@ function BudgetOverview({
         </div>
       )}
 
-      {/* Recent Manual Expenses Section */}
-      <RecentManualExpenses
-        transactions={transactions}
-        categories={categories}
-        categoryBudgets={categoryBudgets}
-      />
     </div>
-  )
-}
-
-// Recent Manual Expenses Component
-interface RecentManualExpensesProps {
-  transactions: import('@/types').Transaction[]
-  categories: Category[]
-  categoryBudgets: CategoryBudget[]
-}
-
-function RecentManualExpenses({ transactions, categories, categoryBudgets }: RecentManualExpensesProps) {
-  const categoryMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories])
-
-  // Fallback map for imported transactions (that don't have budgetGroup)
-  const categoryBudgetGroupMap = useMemo(() => {
-    const map = new Map<string, BudgetGroupType>()
-    for (const b of categoryBudgets) {
-      map.set(b.categoryId, b.group)
-    }
-    return map
-  }, [categoryBudgets])
-
-  // Helper to get budget group: use transaction's budgetGroup if available, fallback to category config
-  const getBudgetGroup = (expense: import('@/types').Transaction): 'needs' | 'wants' | undefined => {
-    return expense.budgetGroup || categoryBudgetGroupMap.get(expense.category) as 'needs' | 'wants' | undefined
-  }
-
-  // Filter manual expenses and sort by date (most recent first)
-  const manualExpenses = useMemo(() => {
-    return transactions
-      .filter(t => t.source === 'manual' && t.amount < 0)
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-  }, [transactions])
-
-  // Group expenses by date
-  const groupedExpenses = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0]
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
-
-    const groups = {
-      today: [] as typeof manualExpenses,
-      yesterday: [] as typeof manualExpenses,
-      earlier: [] as typeof manualExpenses,
-    }
-
-    for (const expense of manualExpenses) {
-      if (expense.date === today) {
-        groups.today.push(expense)
-      } else if (expense.date === yesterday) {
-        groups.yesterday.push(expense)
-      } else {
-        groups.earlier.push(expense)
-      }
-    }
-
-    return groups
-  }, [manualExpenses])
-
-  // Calculate totals - use transaction's budgetGroup directly
-  const totals = useMemo(() => {
-    let needsTotal = 0
-    let wantsTotal = 0
-
-    for (const expense of manualExpenses) {
-      const group = getBudgetGroup(expense)
-      const amount = Math.abs(expense.amount)
-      if (group === 'needs') {
-        needsTotal += amount
-      } else if (group === 'wants') {
-        wantsTotal += amount
-      }
-    }
-
-    return { needsTotal, wantsTotal, total: needsTotal + wantsTotal }
-  }, [manualExpenses, categoryBudgetGroupMap])
-
-  // Don't show section if no manual expenses
-  if (manualExpenses.length === 0) {
-    return null
-  }
-
-  const formatExpenseDate = (dateStr: string) => {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
-  }
-
-  const renderExpenseGroup = (title: string, expenses: typeof manualExpenses, showDate: boolean = false) => {
-    if (expenses.length === 0) return null
-
-    return (
-      <div className="space-y-2">
-        <h4 className="text-xs text-gray-500 uppercase tracking-wide">{title}</h4>
-        {expenses.map(expense => {
-          const category = categoryMap.get(expense.category)
-          const budgetGroup = getBudgetGroup(expense)
-
-          return (
-            <div
-              key={expense.id}
-              className="flex items-center justify-between p-2 bg-gray-700/30 rounded-lg"
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ backgroundColor: category?.color || '#94a3b8' }}
-                />
-                <div>
-                  <p className="text-sm">{expense.description}</p>
-                  <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <span>{category?.name || expense.category}</span>
-                    {showDate && (
-                      <>
-                        <span>•</span>
-                        <span>{formatExpenseDate(expense.date)}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs px-1.5 py-0.5 rounded ${
-                  budgetGroup === 'needs'
-                    ? 'bg-blue-500/20 text-blue-400'
-                    : 'bg-yellow-500/20 text-yellow-400'
-                }`}>
-                  {budgetGroup === 'needs' ? 'Besoins' : 'Envies'}
-                </span>
-                <span className="text-red-400 font-medium">
-                  {formatMoney(expense.amount)}
-                </span>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    )
-  }
-
-  return (
-    <Card>
-      <div className="flex items-center justify-between mb-4">
-        <CardTitle icon={<TrendingUp className="w-5 h-5 text-purple-400" />}>
-          Dépenses manuelles
-        </CardTitle>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-gray-400">
-            Total: <span className="text-red-400 font-medium">{formatMoney(-totals.total)}</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Totals by group */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-          <p className="text-xs text-blue-400 mb-1">Besoins</p>
-          <p className="text-lg font-bold text-blue-400">{formatMoney(-totals.needsTotal)}</p>
-        </div>
-        <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-          <p className="text-xs text-yellow-400 mb-1">Envies</p>
-          <p className="text-lg font-bold text-yellow-400">{formatMoney(-totals.wantsTotal)}</p>
-        </div>
-      </div>
-
-      {/* Expense list */}
-      <div className="space-y-4 max-h-[300px] overflow-y-auto">
-        {renderExpenseGroup("Aujourd'hui", groupedExpenses.today)}
-        {renderExpenseGroup("Hier", groupedExpenses.yesterday)}
-        {renderExpenseGroup("Plus tôt ce mois", groupedExpenses.earlier, true)}
-      </div>
-
-      {manualExpenses.length > 5 && (
-        <p className="text-xs text-gray-500 text-center mt-3">
-          {manualExpenses.length} dépenses manuelles ce mois
-        </p>
-      )}
-    </Card>
   )
 }
 
@@ -1440,6 +1586,8 @@ interface SavingsGoalsManagerProps {
 
 function SavingsGoalsManager({ goals, onAddGoal, onEditGoal }: SavingsGoalsManagerProps) {
   const toast = useToast()
+  const assetAccounts = useLiveQuery(() => assetAccountService.getActive()) ?? []
+  const assetAccountMap = useMemo(() => new Map(assetAccounts.map(a => [a.id, a])), [assetAccounts])
 
   const handleDelete = async (goal: SavingsGoal) => {
     if (confirm(`Supprimer l'objectif "${goal.name}" ?`)) {
@@ -1459,7 +1607,16 @@ function SavingsGoalsManager({ goals, onAddGoal, onEditGoal }: SavingsGoalsManag
     }
 
     await savingsGoalService.addContribution(goal.id, value)
-    toast.success('Contribution ajoutée', `+${formatMoney(value)} ajouté à "${goal.name}"`)
+
+    const linkedAccount = goal.linkedAssetAccountId ? assetAccountMap.get(goal.linkedAssetAccountId) : null
+    if (linkedAccount) {
+      toast.success(
+        'Contribution ajoutée',
+        `+${formatMoney(value)} ajouté à "${goal.name}" et au compte "${linkedAccount.name}"`
+      )
+    } else {
+      toast.success('Contribution ajoutée', `+${formatMoney(value)} ajouté à "${goal.name}"`)
+    }
   }
 
   const activeGoals = goals.filter(g => !g.isCompleted)
@@ -1507,6 +1664,12 @@ function SavingsGoalsManager({ goals, onAddGoal, onEditGoal }: SavingsGoalsManag
                           {monthsLeft !== null && (
                             <span className="ml-1">({monthsLeft} mois)</span>
                           )}
+                        </p>
+                      )}
+                      {goal.linkedAssetAccountId && assetAccountMap.get(goal.linkedAssetAccountId) && (
+                        <p className="text-xs text-blue-400 flex items-center gap-1 mt-0.5">
+                          <Link className="w-3 h-3" />
+                          {assetAccountMap.get(goal.linkedAssetAccountId)?.name}
                         </p>
                       )}
                     </div>
@@ -1647,7 +1810,7 @@ interface YearlyBudgetViewProps {
   transactions: import('@/types').Transaction[]
 }
 
-function YearlyBudgetView({ savingsGoals, monthlyIncome, transactions }: YearlyBudgetViewProps) {
+function YearlyBudgetView({ savingsGoals, monthlyIncome: _monthlyIncome, transactions }: YearlyBudgetViewProps) {
   const currentYear = new Date().getFullYear()
   const [selectedYear, setSelectedYear] = useState(currentYear)
   const currentMonth = new Date().getMonth()
@@ -1782,7 +1945,6 @@ function YearlyBudgetView({ savingsGoals, monthlyIncome, transactions }: YearlyB
               {MONTH_NAMES.map((monthName, index) => {
                 const monthKey = `${selectedYear}-${String(index + 1).padStart(2, '0')}`
                 const isCurrentMonth = selectedYear === currentYear && index === currentMonth
-                const isPast = selectedYear < currentYear || (selectedYear === currentYear && index < currentMonth)
                 const isFuture = selectedYear > currentYear || (selectedYear === currentYear && index > currentMonth)
 
                 const income = monthlyIncomeActual.get(monthKey) || 0
@@ -1859,11 +2021,26 @@ function YearlyBudgetView({ savingsGoals, monthlyIncome, transactions }: YearlyB
           <div className="space-y-4 mt-4">
             {savingsGoals.filter(g => !g.isCompleted).map(goal => {
               const monthlyAmount = goal.monthlyContribution || 0
-              const projectedEndOfYear = goal.currentAmount + (monthlyAmount * (12 - currentMonth))
-              const progressEndOfYear = goal.targetAmount > 0 ? (projectedEndOfYear / goal.targetAmount) * 100 : 0
+              const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
               const monthsToGoal = monthlyAmount > 0
-                ? Math.ceil((goal.targetAmount - goal.currentAmount) / monthlyAmount)
+                ? Math.ceil(remaining / monthlyAmount)
                 : null
+              const remainingMonthsInYear = 12 - currentMonth
+
+              // Calculate when goal will be reached
+              const goalReachedThisYear = monthsToGoal !== null && monthsToGoal <= remainingMonthsInYear
+              const monthWhenReached = monthsToGoal !== null
+                ? new Date(selectedYear, currentMonth + monthsToGoal, 1)
+                : null
+
+              // Projected end of year (capped at target if reached before)
+              const projectedEndOfYear = goalReachedThisYear
+                ? goal.targetAmount
+                : goal.currentAmount + (monthlyAmount * remainingMonthsInYear)
+              const progressEndOfYear = goal.targetAmount > 0 ? (projectedEndOfYear / goal.targetAmount) * 100 : 0
+
+              // Current progress
+              const currentProgress = goal.targetAmount > 0 ? (goal.currentAmount / goal.targetAmount) * 100 : 0
 
               return (
                 <div key={goal.id} className="p-3 bg-gray-700/30 rounded-lg">
@@ -1886,11 +2063,12 @@ function YearlyBudgetView({ savingsGoals, monthlyIncome, transactions }: YearlyB
                       <p className="font-medium" style={{ color: goal.color }}>
                         {formatMoney(goal.currentAmount)}
                       </p>
+                      <p className="text-xs text-gray-600">{formatPercent(currentProgress, 0)}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-500">Fin {selectedYear}</p>
-                      <p className="font-medium text-blue-400">
-                        {formatMoney(projectedEndOfYear)}
+                      <p className="text-xs text-gray-500">Reste à épargner</p>
+                      <p className="font-medium text-orange-400">
+                        {formatMoney(remaining)}
                       </p>
                     </div>
                     <div>
@@ -1905,25 +2083,29 @@ function YearlyBudgetView({ savingsGoals, monthlyIncome, transactions }: YearlyB
                     <div
                       className="h-full rounded-full transition-all"
                       style={{
-                        width: `${Math.min(progressEndOfYear, 100)}%`,
+                        width: `${Math.min(currentProgress, 100)}%`,
                         backgroundColor: goal.color,
                       }}
                     />
                   </div>
 
-                  <p className="text-xs text-gray-500">
-                    {monthsToGoal !== null ? (
-                      monthsToGoal <= 0 ? (
-                        <span className="text-green-400">Objectif atteint !</span>
+                  <p className="text-xs">
+                    {remaining <= 0 ? (
+                      <span className="text-green-400 font-medium">Objectif atteint !</span>
+                    ) : monthsToGoal !== null ? (
+                      goalReachedThisYear ? (
+                        <span className="text-green-400">
+                          Objectif atteint en {monthWhenReached?.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })} (~{monthsToGoal} mois)
+                        </span>
                       ) : (
-                        <>
+                        <span className="text-blue-400">
                           Objectif atteint dans ~{monthsToGoal} mois
                           {goal.deadline && (
-                            <span className="ml-1">
+                            <span className="text-gray-500 ml-1">
                               (échéance: {new Date(goal.deadline).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })})
                             </span>
                           )}
-                        </>
+                        </span>
                       )
                     ) : (
                       <span className="text-yellow-400">Définissez une épargne mensuelle</span>
@@ -2287,6 +2469,10 @@ function SavingsGoalModal({ goal, onClose, onSave }: SavingsGoalModalProps) {
   const [monthlyContribution, setMonthlyContribution] = useState(goal?.monthlyContribution?.toString() || '')
   const [deadline, setDeadline] = useState(goal?.deadline || '')
   const [color, setColor] = useState(goal?.color || '#3b82f6')
+  const [linkedAssetAccountId, setLinkedAssetAccountId] = useState(goal?.linkedAssetAccountId || '')
+
+  // Load asset accounts for linking
+  const assetAccounts = useLiveQuery(() => assetAccountService.getActive()) ?? []
 
   // Calculate required monthly amount based on deadline
   const calculatedMonthly = useMemo(() => {
@@ -2315,17 +2501,27 @@ function SavingsGoalModal({ goal, onClose, onSave }: SavingsGoalModalProps) {
   const handleSave = async () => {
     if (!name || !targetAmount) return
 
+    // If linking to an account, sync the current amount from the account
+    let syncedCurrentAmount = parseFloat(currentAmount) || 0
+    if (linkedAssetAccountId) {
+      const linkedAcc = assetAccounts.find(a => a.id === linkedAssetAccountId)
+      if (linkedAcc) {
+        syncedCurrentAmount = linkedAcc.currentBalance
+      }
+    }
+
     const newGoal: SavingsGoal = {
       id: goal?.id || uuidv4(),
       name,
       icon: 'Target',
       color,
       targetAmount: parseFloat(targetAmount) || 0,
-      currentAmount: parseFloat(currentAmount) || 0,
+      currentAmount: syncedCurrentAmount,
       monthlyContribution: parseFloat(monthlyContribution) || 0,
       deadline: deadline || undefined,
       priority: goal?.priority || 1,
-      isCompleted: false,
+      isCompleted: syncedCurrentAmount >= (parseFloat(targetAmount) || 0),
+      linkedAssetAccountId: linkedAssetAccountId || undefined,
       createdAt: goal?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
@@ -2336,6 +2532,20 @@ function SavingsGoalModal({ goal, onClose, onSave }: SavingsGoalModalProps) {
       await savingsGoalService.add(newGoal)
     }
     onSave()
+  }
+
+  // Get linked account info
+  const linkedAccount = assetAccounts.find(a => a.id === linkedAssetAccountId)
+
+  // Auto-update current amount when linking to an account
+  const handleLinkChange = (accountId: string) => {
+    setLinkedAssetAccountId(accountId)
+    if (accountId) {
+      const acc = assetAccounts.find(a => a.id === accountId)
+      if (acc) {
+        setCurrentAmount(acc.currentBalance.toString())
+      }
+    }
   }
 
   const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
@@ -2415,6 +2625,40 @@ function SavingsGoalModal({ goal, onClose, onSave }: SavingsGoalModalProps) {
               />
               <span className="text-gray-400">€/mois</span>
             </div>
+          </div>
+
+          {/* Link to Asset Account */}
+          <div>
+            <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+              <Link className="w-4 h-4 text-blue-400" />
+              Lier à un compte Patrimoine
+            </label>
+            <select
+              value={linkedAssetAccountId}
+              onChange={(e) => handleLinkChange(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2"
+            >
+              <option value="">Aucun (gérer manuellement)</option>
+              {assetAccounts.map(account => (
+                <option key={account.id} value={account.id}>
+                  {account.name} ({formatMoney(account.currentBalance)})
+                </option>
+              ))}
+            </select>
+            {linkedAccount && (
+              <div className="mt-2 p-2 bg-blue-500/10 border border-blue-500/30 rounded-lg space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <Landmark className="w-4 h-4 text-blue-400" />
+                  <span className="text-blue-300">
+                    Lié à "{linkedAccount.name}" ({formatMoney(linkedAccount.currentBalance)})
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Le montant actuel sera synchronisé avec le solde du compte.
+                  Les contributions futures mettront à jour les deux.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Calculation info box */}

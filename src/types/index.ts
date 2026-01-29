@@ -12,6 +12,7 @@ export interface Transaction {
   source: 'import' | 'manual' // How the transaction was created
   budgetGroup?: 'needs' | 'wants' // For manual transactions: user-chosen budget group
   budgetMonth?: string // YYYY-MM - Override which month this counts towards (e.g., salary received Dec 29 counting for January)
+  assignedTo?: string // Person in household who made this expense (e.g., "Marvin", "Partner")
   createdAt: string
   updatedAt: string
 }
@@ -195,6 +196,7 @@ export interface FixedCharge {
   name: string // Display name
   amount: number
   categoryId: string
+  budgetGroup?: 'needs' | 'wants' // Which budget group this charge belongs to (optional for migration)
   isEnabled: boolean
 }
 
@@ -219,6 +221,7 @@ export interface SavingsGoal {
   deadline?: string // YYYY-MM-DD
   priority: number // 1 = highest
   isCompleted: boolean
+  linkedAssetAccountId?: string // Link to a Patrimoine asset account
   createdAt: string
   updatedAt: string
 }

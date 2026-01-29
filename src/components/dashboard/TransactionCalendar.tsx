@@ -28,14 +28,22 @@ export const TransactionCalendar = memo(function TransactionCalendar({
   transactions,
   onDayClick,
 }: TransactionCalendarProps) {
+  // Get today's date for filtering
+  const today = useMemo(() => new Date().toISOString().split('T')[0], [])
+
+  // Filter transactions to only include up to today (no future transactions)
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter(t => t.date <= today)
+  }, [transactions, today])
+
   // Get initial month from transactions or current date
   const initialDate = useMemo(() => {
-    if (transactions.length > 0) {
-      const dates = transactions.map(t => t.date).sort()
+    if (filteredTransactions.length > 0) {
+      const dates = filteredTransactions.map(t => t.date).sort()
       return new Date(dates[Math.floor(dates.length / 2)])
     }
     return new Date()
-  }, [transactions])
+  }, [filteredTransactions])
 
   const [currentMonth, setCurrentMonth] = useState(initialDate.getMonth())
   const [currentYear, setCurrentYear] = useState(initialDate.getFullYear())
@@ -45,7 +53,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
   const transactionsByDate = useMemo(() => {
     const map = new Map<string, { income: number; expenses: number; transactions: Transaction[] }>()
 
-    for (const t of transactions) {
+    for (const t of filteredTransactions) {
       const existing = map.get(t.date) || { income: 0, expenses: 0, transactions: [] }
       if (t.amount > 0) {
         existing.income += t.amount
@@ -57,7 +65,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
     }
 
     return map
-  }, [transactions])
+  }, [filteredTransactions])
 
   // Generate calendar days
   const calendarDays = useMemo((): DayData[] => {

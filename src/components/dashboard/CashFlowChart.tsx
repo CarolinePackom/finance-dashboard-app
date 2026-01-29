@@ -32,7 +32,7 @@ export const CashFlowChart = memo(function CashFlowChart({ data }: CashFlowChart
   const padding = Math.max(Math.abs(maxValue - minValue) * 0.1, 100)
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minHeight={200}>
       <AreaChart
         data={data}
         margin={{ top: 10, right: 10, left: 0, bottom: 0 }}

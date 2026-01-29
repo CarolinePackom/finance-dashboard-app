@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { Trash2, AlertTriangle, FileText, FileSpreadsheet, Upload, Save, FolderOpen, RefreshCw, Brain, Wallet, Check } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { Trash2, AlertTriangle, FileText, FileSpreadsheet, Upload, Save, FolderOpen, RefreshCw, Brain, Wallet, Check, Zap, Eye, EyeOff, Users, Plus, X } from 'lucide-react'
 import { Card, CardTitle, Button, useToast, markAsSaved } from '@components/common'
 import { db, categoryService, settingsService } from '@services/db'
 import { useTransactions } from '@store/TransactionContext'
@@ -39,8 +39,22 @@ export function SettingsPage() {
   const [autoSaveConfigured, setAutoSaveConfigured] = useState(hasAutoSaveLocation())
   const [autoSaveFileName, setAutoSaveFileName] = useState(getAutoSaveFileName())
 
-  // Calculate total of all transactions
-  const transactionsTotal = allTransactions.reduce((sum, t) => sum + t.amount, 0)
+  // Claude API key state
+  const [claudeApiKey, setClaudeApiKey] = useState('')
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [savingApiKey, setSavingApiKey] = useState(false)
+  const [hasExistingApiKey, setHasExistingApiKey] = useState(false)
+
+  // Household members state
+  const [householdMembers, setHouseholdMembers] = useState<string[]>([])
+  const [newMemberName, setNewMemberName] = useState('')
+
+  // Calculate total of transactions up to today (exclude future transactions)
+  const transactionsTotal = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0]
+    const pastTransactions = allTransactions.filter(t => t.date <= today)
+    return pastTransactions.reduce((sum, t) => sum + t.amount, 0)
+  }, [allTransactions])
 
   // Load initial balance on mount
   useEffect(() => {
@@ -48,6 +62,70 @@ export function SettingsPage() {
       setInitialBalance(balance)
     })
   }, [])
+
+  // Load Claude API key status on mount
+  useEffect(() => {
+    settingsService.get('claudeApiKey').then(key => {
+      setHasExistingApiKey(typeof key === 'string' && key.length > 0)
+    })
+  }, [])
+
+  // Load household members on mount
+  useEffect(() => {
+    settingsService.get('householdMembers').then(members => {
+      if (Array.isArray(members)) {
+        setHouseholdMembers(members)
+      }
+    })
+  }, [])
+
+  // Handle adding a household member
+  const handleAddMember = useCallback(async () => {
+    const name = newMemberName.trim()
+    if (!name || householdMembers.includes(name)) return
+
+    const updated = [...householdMembers, name]
+    await settingsService.set('householdMembers', updated)
+    setHouseholdMembers(updated)
+    setNewMemberName('')
+    toast.success('Membre ajouté', `${name} a été ajouté au foyer`)
+  }, [newMemberName, householdMembers, toast])
+
+  // Handle removing a household member
+  const handleRemoveMember = useCallback(async (name: string) => {
+    const updated = householdMembers.filter(m => m !== name)
+    await settingsService.set('householdMembers', updated)
+    setHouseholdMembers(updated)
+    toast.success('Membre supprimé', `${name} a été retiré du foyer`)
+  }, [householdMembers, toast])
+
+  // Handle saving Claude API key
+  const handleSaveApiKey = useCallback(async () => {
+    if (!claudeApiKey.trim()) return
+
+    setSavingApiKey(true)
+    try {
+      await settingsService.set('claudeApiKey', claudeApiKey.trim())
+      setHasExistingApiKey(true)
+      setClaudeApiKey('')
+      toast.success('Clé API sauvegardée', 'Le mode IA est maintenant disponible dans le Conseiller Financier')
+    } catch (err) {
+      toast.error('Erreur', (err as Error).message)
+    } finally {
+      setSavingApiKey(false)
+    }
+  }, [claudeApiKey, toast])
+
+  // Handle removing Claude API key
+  const handleRemoveApiKey = useCallback(async () => {
+    try {
+      await settingsService.delete('claudeApiKey')
+      setHasExistingApiKey(false)
+      toast.success('Clé API supprimée', 'Le mode IA est désactivé')
+    } catch (err) {
+      toast.error('Erreur', (err as Error).message)
+    }
+  }, [toast])
 
   // Calculate current balance based on initial + transactions
   const calculatedCurrentBalance = (initialBalance || 0) + transactionsTotal
@@ -590,6 +668,143 @@ export function SettingsPage() {
         >
           Apprendre et appliquer
         </Button>
+      </Card>
+
+      {/* Claude AI API Key */}
+      <Card className="border-purple-500/50">
+        <CardTitle icon={<Zap className="w-5 h-5 text-purple-400" />}>
+          Mode IA Claude (optionnel)
+        </CardTitle>
+        <p className="text-gray-400 text-sm mt-2 mb-4">
+          Active le mode IA dans le Conseiller Financier pour obtenir des analyses personnalisées et poser des questions sur tes finances.
+        </p>
+
+        {hasExistingApiKey ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+              <Check className="w-5 h-5 text-purple-400" />
+              <div className="flex-1">
+                <p className="text-purple-400 font-medium">Clé API configurée</p>
+                <p className="text-xs text-gray-400">Le mode IA est disponible dans le Tableau de Bord</p>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              onClick={handleRemoveApiKey}
+              leftIcon={<Trash2 className="w-4 h-4" />}
+            >
+              Supprimer la clé
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                Clé API Claude (Anthropic)
+              </label>
+              <div className="flex gap-2">
+                <div className="flex-1 relative">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={claudeApiKey}
+                    onChange={(e) => setClaudeApiKey(e.target.value)}
+                    placeholder="sk-ant-api..."
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-600 rounded"
+                  >
+                    {showApiKey ? (
+                      <EyeOff className="w-4 h-4 text-gray-400" />
+                    ) : (
+                      <Eye className="w-4 h-4 text-gray-400" />
+                    )}
+                  </button>
+                </div>
+                <Button
+                  variant="primary"
+                  onClick={handleSaveApiKey}
+                  isLoading={savingApiKey}
+                  disabled={!claudeApiKey.trim()}
+                >
+                  Sauvegarder
+                </Button>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">
+              Obtiens ta clé sur{' '}
+              <a
+                href="https://console.anthropic.com/settings/keys"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-purple-400 hover:underline"
+              >
+                console.anthropic.com
+              </a>
+              . La clé est stockée localement dans ton navigateur.
+            </p>
+          </div>
+        )}
+      </Card>
+
+      {/* Household Members */}
+      <Card>
+        <CardTitle icon={<Users className="w-5 h-5 text-purple-400" />}>
+          Membres du foyer
+        </CardTitle>
+        <p className="text-gray-400 text-sm mt-2 mb-4">
+          Ajoutez les membres de votre foyer pour suivre les dépenses par personne.
+          Chaque transaction pourra être imputée à une personne.
+        </p>
+
+        {/* Current members */}
+        {householdMembers.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-4">
+            {householdMembers.map((member) => (
+              <div
+                key={member}
+                className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/20 text-purple-400 rounded-full"
+              >
+                <span>{member}</span>
+                <button
+                  onClick={() => handleRemoveMember(member)}
+                  className="hover:bg-purple-500/30 rounded-full p-0.5 transition-colors"
+                  title={`Retirer ${member}`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add new member */}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newMemberName}
+            onChange={(e) => setNewMemberName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddMember()}
+            placeholder="Nom du membre (ex: Marvin)"
+            className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2"
+          />
+          <Button
+            variant="secondary"
+            onClick={handleAddMember}
+            disabled={!newMemberName.trim() || householdMembers.includes(newMemberName.trim())}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Ajouter
+          </Button>
+        </div>
+
+        {householdMembers.length === 0 && (
+          <p className="text-xs text-gray-500 mt-3">
+            Aucun membre configuré. Ajoutez des membres pour activer le suivi des dépenses par personne.
+          </p>
+        )}
       </Card>
 
       {/* Clear data */}

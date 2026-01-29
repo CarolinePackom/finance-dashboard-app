@@ -375,7 +375,69 @@ export const savingsGoalService = {
       updatedAt: new Date().toISOString(),
     })
 
+    // If goal is linked to an asset account, update its balance too
+    if (goal.linkedAssetAccountId) {
+      const assetAccount = await db.assetAccounts.get(goal.linkedAssetAccountId)
+      if (assetAccount) {
+        const newBalance = assetAccount.currentBalance + amount
+        // Import assetAccountService dynamically to avoid circular dependency
+        const today = new Date().toISOString().split('T')[0]
+        await db.assetAccounts.update(goal.linkedAssetAccountId, {
+          currentBalance: newBalance,
+          updatedAt: new Date().toISOString(),
+        })
+        // Add to balance history
+        const existingHistory = await db.balanceHistory
+          .where('[accountId+date]')
+          .equals([goal.linkedAssetAccountId, today])
+          .first()
+        if (existingHistory) {
+          await db.balanceHistory.update(existingHistory.id, { balance: newBalance })
+        } else {
+          await db.balanceHistory.add({
+            id: `hist-${goal.linkedAssetAccountId}-${today}`,
+            accountId: goal.linkedAssetAccountId,
+            balance: newBalance,
+            date: today,
+            createdAt: new Date().toISOString(),
+          })
+        }
+      }
+    }
+
     return newAmount
+  },
+
+  async linkToAsset(goalId: string, assetAccountId: string | null) {
+    const goal = await db.savingsGoals.get(goalId)
+    if (!goal) throw new Error('Goal not found')
+
+    await db.savingsGoals.update(goalId, {
+      linkedAssetAccountId: assetAccountId || undefined,
+      updatedAt: new Date().toISOString(),
+    })
+  },
+
+  async getGoalsForAsset(assetAccountId: string) {
+    return db.savingsGoals
+      .filter(g => g.linkedAssetAccountId === assetAccountId)
+      .toArray()
+  },
+
+  async syncFromAsset(goalId: string) {
+    const goal = await db.savingsGoals.get(goalId)
+    if (!goal?.linkedAssetAccountId) return null
+
+    const asset = await db.assetAccounts.get(goal.linkedAssetAccountId)
+    if (!asset) return null
+
+    await db.savingsGoals.update(goalId, {
+      currentAmount: asset.currentBalance,
+      isCompleted: asset.currentBalance >= goal.targetAmount,
+      updatedAt: new Date().toISOString(),
+    })
+
+    return asset.currentBalance
   },
 }
 
@@ -544,6 +606,73 @@ export const assetAccountService = {
     }
 
     return newBalance
+  },
+
+  // Transfer money to an asset account (from main bank account)
+  async transferToAccount(
+    destinationAccountId: string,
+    amount: number,
+    description?: string,
+    date?: string
+  ) {
+    const now = new Date().toISOString()
+    const transferDate = date || now.split('T')[0]
+    const month = transferDate.substring(0, 7)
+
+    // Get destination account
+    const destAccount = await db.assetAccounts.get(destinationAccountId)
+    if (!destAccount) throw new Error('Compte destination introuvable')
+
+    // Create transaction (outgoing transfer from main account)
+    const transaction: Transaction = {
+      id: crypto.randomUUID(),
+      date: transferDate,
+      type: 'VIREMENT_EMIS',
+      description: description || `Virement vers ${destAccount.name}`,
+      amount: -Math.abs(amount), // Negative = outgoing
+      category: 'transfer-out',
+      importId: `transfer-${month}`,
+      isManuallyEdited: false,
+      source: 'manual',
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await db.transactions.add(transaction)
+
+    // Update destination account balance
+    const newBalance = destAccount.currentBalance + Math.abs(amount)
+    await this.updateBalance(destinationAccountId, newBalance)
+
+    return { transaction, newBalance }
+  },
+
+  // Transfer between two asset accounts
+  async transferBetweenAccounts(
+    sourceAccountId: string,
+    destinationAccountId: string,
+    amount: number,
+    _description?: string
+  ) {
+    const sourceAccount = await db.assetAccounts.get(sourceAccountId)
+    const destAccount = await db.assetAccounts.get(destinationAccountId)
+
+    if (!sourceAccount) throw new Error('Compte source introuvable')
+    if (!destAccount) throw new Error('Compte destination introuvable')
+    if (sourceAccount.currentBalance < amount) throw new Error('Solde insuffisant')
+
+    // Update source account (decrease)
+    const newSourceBalance = sourceAccount.currentBalance - Math.abs(amount)
+    await this.updateBalance(sourceAccountId, newSourceBalance)
+
+    // Update destination account (increase)
+    const newDestBalance = destAccount.currentBalance + Math.abs(amount)
+    await this.updateBalance(destinationAccountId, newDestBalance)
+
+    return {
+      sourceBalance: newSourceBalance,
+      destinationBalance: newDestBalance
+    }
   },
 }
 
