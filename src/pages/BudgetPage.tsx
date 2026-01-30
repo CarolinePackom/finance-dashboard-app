@@ -98,7 +98,9 @@ export function BudgetPage() {
   // Calculate real bank balance (initial balance + transactions up to today only)
   const bankBalance = useMemo(() => {
     if (initialBalance === null) return null
-    const today = new Date().toISOString().split('T')[0]
+    // Use local date, not UTC (toISOString returns UTC which can cause timezone issues)
+    const now = new Date()
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const pastTransactions = allTransactionsFromHook.filter(t => t.date <= today)
     const transactionsTotal = pastTransactions.reduce((sum, t) => sum + t.amount, 0)
     return initialBalance + transactionsTotal

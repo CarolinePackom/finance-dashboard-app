@@ -29,8 +29,11 @@ export const TransactionCalendar = memo(function TransactionCalendar({
   transactions,
   onDayClick,
 }: TransactionCalendarProps) {
-  // Get today's date
-  const today = useMemo(() => new Date().toISOString().split('T')[0], [])
+  // Get today's date (use local date, not UTC to avoid timezone issues)
+  const today = useMemo(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  }, [])
 
   // Get initial month from past transactions or current date
   const initialDate = useMemo(() => {

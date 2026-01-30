@@ -51,7 +51,9 @@ export function SettingsPage() {
 
   // Calculate total of transactions up to today (exclude future transactions)
   const transactionsTotal = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0]
+    // Use local date, not UTC (toISOString returns UTC which can cause timezone issues)
+    const now = new Date()
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const pastTransactions = allTransactions.filter(t => t.date <= today)
     return pastTransactions.reduce((sum, t) => sum + t.amount, 0)
   }, [allTransactions])
