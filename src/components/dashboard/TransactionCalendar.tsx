@@ -22,38 +22,35 @@ interface DayData {
   transactions: Transaction[]
   isCurrentMonth: boolean
   isToday: boolean
+  isFuture: boolean
 }
 
 export const TransactionCalendar = memo(function TransactionCalendar({
   transactions,
   onDayClick,
 }: TransactionCalendarProps) {
-  // Get today's date for filtering
+  // Get today's date
   const today = useMemo(() => new Date().toISOString().split('T')[0], [])
 
-  // Filter transactions to only include up to today (no future transactions)
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter(t => t.date <= today)
-  }, [transactions, today])
-
-  // Get initial month from transactions or current date
+  // Get initial month from past transactions or current date
   const initialDate = useMemo(() => {
-    if (filteredTransactions.length > 0) {
-      const dates = filteredTransactions.map(t => t.date).sort()
+    const pastTransactions = transactions.filter(t => t.date <= today)
+    if (pastTransactions.length > 0) {
+      const dates = pastTransactions.map(t => t.date).sort()
       return new Date(dates[Math.floor(dates.length / 2)])
     }
     return new Date()
-  }, [filteredTransactions])
+  }, [transactions, today])
 
   const [currentMonth, setCurrentMonth] = useState(initialDate.getMonth())
   const [currentYear, setCurrentYear] = useState(initialDate.getFullYear())
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
 
-  // Group transactions by date
+  // Group ALL transactions by date (including future)
   const transactionsByDate = useMemo(() => {
     const map = new Map<string, { income: number; expenses: number; transactions: Transaction[] }>()
 
-    for (const t of filteredTransactions) {
+    for (const t of transactions) {
       const existing = map.get(t.date) || { income: 0, expenses: 0, transactions: [] }
       if (t.amount > 0) {
         existing.income += t.amount
@@ -65,13 +62,13 @@ export const TransactionCalendar = memo(function TransactionCalendar({
     }
 
     return map
-  }, [filteredTransactions])
+  }, [transactions])
 
   // Generate calendar days
   const calendarDays = useMemo((): DayData[] => {
     const days: DayData[] = []
-    const today = new Date()
-    const todayStr = today.toISOString().split('T')[0]
+    const todayDate = new Date()
+    const todayStr = todayDate.toISOString().split('T')[0]
 
     // First day of the month
     const firstDay = new Date(currentYear, currentMonth, 1)
@@ -98,6 +95,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
         transactions: data?.transactions || [],
         isCurrentMonth: false,
         isToday: dateStr === todayStr,
+        isFuture: dateStr > todayStr,
       })
     }
 
@@ -115,6 +113,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
         transactions: data?.transactions || [],
         isCurrentMonth: true,
         isToday: dateStr === todayStr,
+        isFuture: dateStr > todayStr,
       })
     }
 
@@ -133,6 +132,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
         transactions: data?.transactions || [],
         isCurrentMonth: false,
         isToday: dateStr === todayStr,
+        isFuture: dateStr > todayStr,
       })
     }
 
@@ -224,6 +224,7 @@ export const TransactionCalendar = memo(function TransactionCalendar({
                 ${dayData.isToday ? 'ring-2 ring-blue-500' : ''}
                 ${isSelected ? 'ring-2 ring-white' : ''}
                 ${hasTransactions ? 'hover:bg-gray-700' : 'hover:bg-gray-800/50'}
+                ${dayData.isFuture ? 'opacity-60' : ''}
               `}
             >
               {/* Day number */}
@@ -231,20 +232,28 @@ export const TransactionCalendar = memo(function TransactionCalendar({
                 text-xs font-medium
                 ${dayData.isCurrentMonth ? 'text-white' : 'text-gray-600'}
                 ${dayData.isToday ? 'text-blue-400' : ''}
+                ${dayData.isFuture && dayData.isCurrentMonth ? 'text-gray-400' : ''}
               `}>
                 {dayData.day}
               </span>
+
+              {/* Future indicator */}
+              {dayData.isFuture && hasTransactions && (
+                <div className="absolute top-1 right-1 text-[8px] text-yellow-500 font-medium">
+                  Prévu
+                </div>
+              )}
 
               {/* Transaction indicators */}
               {hasTransactions && (
                 <div className="mt-1 space-y-0.5">
                   {dayData.income > 0 && (
-                    <div className="text-[10px] md:text-xs text-green-400 truncate">
+                    <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-green-400/60' : 'text-green-400'}`}>
                       +{formatMoney(dayData.income)}
                     </div>
                   )}
                   {dayData.expenses > 0 && (
-                    <div className="text-[10px] md:text-xs text-red-400 truncate">
+                    <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-red-400/60' : 'text-red-400'}`}>
                       -{formatMoney(dayData.expenses)}
                     </div>
                   )}
@@ -256,7 +265,12 @@ export const TransactionCalendar = memo(function TransactionCalendar({
                 <div className="absolute bottom-1 right-1">
                   <span className={`
                     inline-flex items-center justify-center w-4 h-4 text-[9px] font-medium rounded-full
-                    ${netAmount >= 0 ? 'bg-green-500/30 text-green-400' : 'bg-red-500/30 text-red-400'}
+                    ${dayData.isFuture
+                      ? 'bg-yellow-500/20 text-yellow-400'
+                      : netAmount >= 0
+                        ? 'bg-green-500/30 text-green-400'
+                        : 'bg-red-500/30 text-red-400'
+                    }
                   `}>
                     {dayData.transactions.length}
                   </span>
@@ -269,13 +283,18 @@ export const TransactionCalendar = memo(function TransactionCalendar({
 
       {/* Selected day details */}
       {selectedDayData && selectedDayData.transactions.length > 0 && (
-        <div className="mt-4 p-4 bg-gray-700/50 rounded-lg">
-          <h4 className="font-medium mb-3">
+        <div className={`mt-4 p-4 rounded-lg ${selectedDayData.isFuture ? 'bg-yellow-500/10 border border-yellow-500/30' : 'bg-gray-700/50'}`}>
+          <h4 className="font-medium mb-3 flex items-center gap-2">
             {new Date(selectedDayData.date).toLocaleDateString('fr-FR', {
               weekday: 'long',
               day: 'numeric',
               month: 'long',
             })}
+            {selectedDayData.isFuture && (
+              <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">
+                Prévu
+              </span>
+            )}
           </h4>
           <div className="space-y-2 max-h-48 overflow-y-auto">
             {selectedDayData.transactions.map((t) => (
