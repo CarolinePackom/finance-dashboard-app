@@ -173,155 +173,166 @@ export const TransactionCalendar = memo(function TransactionCalendar({
   }
 
   return (
-    <div className="space-y-4">
-      {/* Header with navigation */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={handlePrevMonth}
-          className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-          aria-label="Mois précédent"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <h3 className="text-lg font-semibold">
-          {MONTHS[currentMonth]} {currentYear}
-        </h3>
-        <button
-          onClick={handleNextMonth}
-          className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-          aria-label="Mois suivant"
-        >
-          <ChevronRight className="w-5 h-5" />
-        </button>
-      </div>
-
-      {/* Days of week header */}
-      <div className="grid grid-cols-7 gap-1">
-        {DAYS_OF_WEEK.map(day => (
-          <div
-            key={day}
-            className="text-center text-xs font-medium text-gray-400 py-2"
+    <div className="flex flex-col lg:flex-row gap-4">
+      {/* Calendar section */}
+      <div className="flex-1 space-y-4">
+        {/* Header with navigation */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={handlePrevMonth}
+            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            aria-label="Mois précédent"
           >
-            {day}
-          </div>
-        ))}
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <h3 className="text-lg font-semibold">
+            {MONTHS[currentMonth]} {currentYear}
+          </h3>
+          <button
+            onClick={handleNextMonth}
+            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            aria-label="Mois suivant"
+          >
+            <ChevronRight className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Days of week header */}
+        <div className="grid grid-cols-7 gap-1">
+          {DAYS_OF_WEEK.map(day => (
+            <div
+              key={day}
+              className="text-center text-xs font-medium text-gray-400 py-2"
+            >
+              {day}
+            </div>
+          ))}
+        </div>
+
+        {/* Calendar grid */}
+        <div className="grid grid-cols-7 gap-1">
+          {calendarDays.map((dayData, index) => {
+            const hasTransactions = dayData.income > 0 || dayData.expenses > 0
+            const isSelected = selectedDay === dayData.date
+            const netAmount = dayData.income - dayData.expenses
+
+            return (
+              <button
+                key={index}
+                onClick={() => handleDayClick(dayData)}
+                className={`
+                  relative p-1 min-h-[60px] md:min-h-[70px] rounded-lg transition-all text-left
+                  ${dayData.isCurrentMonth ? 'bg-gray-800' : 'bg-gray-800/30'}
+                  ${dayData.isToday ? 'ring-2 ring-blue-500' : ''}
+                  ${isSelected ? 'ring-2 ring-white' : ''}
+                  ${hasTransactions ? 'hover:bg-gray-700' : 'hover:bg-gray-800/50'}
+                  ${dayData.isFuture ? 'opacity-60' : ''}
+                `}
+              >
+                {/* Day number */}
+                <span className={`
+                  text-xs font-medium
+                  ${dayData.isCurrentMonth ? 'text-white' : 'text-gray-600'}
+                  ${dayData.isToday ? 'text-blue-400' : ''}
+                  ${dayData.isFuture && dayData.isCurrentMonth ? 'text-gray-400' : ''}
+                `}>
+                  {dayData.day}
+                </span>
+
+                {/* Future indicator */}
+                {dayData.isFuture && hasTransactions && (
+                  <div className="absolute top-1 right-1 text-[8px] text-yellow-500 font-medium">
+                    Prévu
+                  </div>
+                )}
+
+                {/* Transaction indicators */}
+                {hasTransactions && (
+                  <div className="mt-1 space-y-0.5">
+                    {dayData.income > 0 && (
+                      <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-green-400/60' : 'text-green-400'}`}>
+                        +{formatMoney(dayData.income)}
+                      </div>
+                    )}
+                    {dayData.expenses > 0 && (
+                      <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-red-400/60' : 'text-red-400'}`}>
+                        -{formatMoney(dayData.expenses)}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Transaction count dot */}
+                {dayData.transactions.length > 0 && (
+                  <div className="absolute bottom-1 right-1">
+                    <span className={`
+                      inline-flex items-center justify-center w-4 h-4 text-[9px] font-medium rounded-full
+                      ${dayData.isFuture
+                        ? 'bg-yellow-500/20 text-yellow-400'
+                        : netAmount >= 0
+                          ? 'bg-green-500/30 text-green-400'
+                          : 'bg-red-500/30 text-red-400'
+                      }
+                    `}>
+                      {dayData.transactions.length}
+                    </span>
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* Calendar grid */}
-      <div className="grid grid-cols-7 gap-1">
-        {calendarDays.map((dayData, index) => {
-          const hasTransactions = dayData.income > 0 || dayData.expenses > 0
-          const isSelected = selectedDay === dayData.date
-          const netAmount = dayData.income - dayData.expenses
-
-          return (
-            <button
-              key={index}
-              onClick={() => handleDayClick(dayData)}
-              className={`
-                relative p-1 min-h-[60px] md:min-h-[70px] rounded-lg transition-all text-left
-                ${dayData.isCurrentMonth ? 'bg-gray-800' : 'bg-gray-800/30'}
-                ${dayData.isToday ? 'ring-2 ring-blue-500' : ''}
-                ${isSelected ? 'ring-2 ring-white' : ''}
-                ${hasTransactions ? 'hover:bg-gray-700' : 'hover:bg-gray-800/50'}
-                ${dayData.isFuture ? 'opacity-60' : ''}
-              `}
-            >
-              {/* Day number */}
-              <span className={`
-                text-xs font-medium
-                ${dayData.isCurrentMonth ? 'text-white' : 'text-gray-600'}
-                ${dayData.isToday ? 'text-blue-400' : ''}
-                ${dayData.isFuture && dayData.isCurrentMonth ? 'text-gray-400' : ''}
-              `}>
-                {dayData.day}
-              </span>
-
-              {/* Future indicator */}
-              {dayData.isFuture && hasTransactions && (
-                <div className="absolute top-1 right-1 text-[8px] text-yellow-500 font-medium">
+      {/* Selected day details - Right panel */}
+      <div className="lg:w-80 lg:flex-shrink-0">
+        {selectedDayData && selectedDayData.transactions.length > 0 ? (
+          <div className={`p-4 rounded-lg h-full ${selectedDayData.isFuture ? 'bg-yellow-500/10 border border-yellow-500/30' : 'bg-gray-700/50'}`}>
+            <h4 className="font-medium mb-3 flex items-center gap-2">
+              {new Date(selectedDayData.date).toLocaleDateString('fr-FR', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+              })}
+              {selectedDayData.isFuture && (
+                <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">
                   Prévu
-                </div>
+                </span>
               )}
-
-              {/* Transaction indicators */}
-              {hasTransactions && (
-                <div className="mt-1 space-y-0.5">
-                  {dayData.income > 0 && (
-                    <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-green-400/60' : 'text-green-400'}`}>
-                      +{formatMoney(dayData.income)}
-                    </div>
-                  )}
-                  {dayData.expenses > 0 && (
-                    <div className={`text-[10px] md:text-xs truncate ${dayData.isFuture ? 'text-red-400/60' : 'text-red-400'}`}>
-                      -{formatMoney(dayData.expenses)}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Transaction count dot */}
-              {dayData.transactions.length > 0 && (
-                <div className="absolute bottom-1 right-1">
-                  <span className={`
-                    inline-flex items-center justify-center w-4 h-4 text-[9px] font-medium rounded-full
-                    ${dayData.isFuture
-                      ? 'bg-yellow-500/20 text-yellow-400'
-                      : netAmount >= 0
-                        ? 'bg-green-500/30 text-green-400'
-                        : 'bg-red-500/30 text-red-400'
-                    }
-                  `}>
-                    {dayData.transactions.length}
+            </h4>
+            <div className="space-y-2 max-h-[300px] overflow-y-auto">
+              {selectedDayData.transactions.map((t) => (
+                <div
+                  key={t.id}
+                  className="flex items-center justify-between py-2 border-b border-gray-600 last:border-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate">{t.description}</p>
+                    <p className="text-xs text-gray-500">{t.type}</p>
+                  </div>
+                  <span className={`text-sm font-medium ml-2 ${t.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {t.amount >= 0 ? '+' : ''}{formatMoney(t.amount)}
                   </span>
                 </div>
-              )}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Selected day details */}
-      {selectedDayData && selectedDayData.transactions.length > 0 && (
-        <div className={`mt-4 p-4 rounded-lg ${selectedDayData.isFuture ? 'bg-yellow-500/10 border border-yellow-500/30' : 'bg-gray-700/50'}`}>
-          <h4 className="font-medium mb-3 flex items-center gap-2">
-            {new Date(selectedDayData.date).toLocaleDateString('fr-FR', {
-              weekday: 'long',
-              day: 'numeric',
-              month: 'long',
-            })}
-            {selectedDayData.isFuture && (
-              <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">
-                Prévu
+              ))}
+            </div>
+            {/* Day summary */}
+            <div className="mt-3 pt-3 border-t border-gray-600 flex justify-between text-sm">
+              <span className="text-gray-400">Solde du jour</span>
+              <span className={selectedDayData.income - selectedDayData.expenses >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {selectedDayData.income - selectedDayData.expenses >= 0 ? '+' : ''}
+                {formatMoney(selectedDayData.income - selectedDayData.expenses)}
               </span>
-            )}
-          </h4>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {selectedDayData.transactions.map((t) => (
-              <div
-                key={t.id}
-                className="flex items-center justify-between py-2 border-b border-gray-600 last:border-0"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm truncate">{t.description}</p>
-                  <p className="text-xs text-gray-500">{t.type}</p>
-                </div>
-                <span className={`text-sm font-medium ml-2 ${t.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {t.amount >= 0 ? '+' : ''}{formatMoney(t.amount)}
-                </span>
-              </div>
-            ))}
+            </div>
           </div>
-          {/* Day summary */}
-          <div className="mt-3 pt-3 border-t border-gray-600 flex justify-between text-sm">
-            <span className="text-gray-400">Solde du jour</span>
-            <span className={selectedDayData.income - selectedDayData.expenses >= 0 ? 'text-green-400' : 'text-red-400'}>
-              {selectedDayData.income - selectedDayData.expenses >= 0 ? '+' : ''}
-              {formatMoney(selectedDayData.income - selectedDayData.expenses)}
-            </span>
+        ) : (
+          <div className="p-4 rounded-lg bg-gray-700/30 h-full flex items-center justify-center text-center">
+            <p className="text-gray-500 text-sm">
+              Cliquez sur un jour pour voir les détails des transactions
+            </p>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 })
