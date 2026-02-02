@@ -24,13 +24,16 @@ import {
   RotateCcw,
   ArrowLeftRight,
   Link,
+  History,
+  ArrowUpCircle,
+  ArrowDownCircle,
 } from 'lucide-react'
 import { v4 as uuidv4 } from 'uuid'
-import { db, assetAccountService, liabilityService, netWorthSnapshotService, savingsGoalService } from '@services/db'
+import { db, assetAccountService, assetMovementService, liabilityService, netWorthSnapshotService, savingsGoalService } from '@services/db'
 import { Card, CardTitle, Button, useToast } from '@components/common'
 import { TransferModal } from '@components/patrimoine/TransferModal'
-import { formatMoney } from '@utils/formatters'
-import type { AssetAccount, AssetAccountType } from '@/types'
+import { formatMoney, formatDate } from '@utils/formatters'
+import type { AssetAccount, AssetAccountType, AssetMovement } from '@/types'
 
 // Icon mapping
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -63,6 +66,7 @@ export function PatrimoinePage() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showUpdateBalanceModal, setShowUpdateBalanceModal] = useState<AssetAccount | null>(null)
   const [showTransferModal, setShowTransferModal] = useState(false)
+  const [showMovementsModal, setShowMovementsModal] = useState<AssetAccount | null>(null)
 
   // Load data
   const accounts = useLiveQuery(() => db.assetAccounts.orderBy('order').toArray(), []) ?? []
@@ -376,6 +380,13 @@ export function PatrimoinePage() {
                     </div>
                     <div className="flex items-center gap-1">
                       <button
+                        onClick={() => setShowMovementsModal(account)}
+                        className="p-2 hover:bg-blue-500/20 rounded-lg transition-colors"
+                        title="Voir les mouvements"
+                      >
+                        <History className="w-4 h-4 text-blue-400" />
+                      </button>
+                      <button
                         onClick={() => setShowUpdateBalanceModal(account)}
                         className="p-2 hover:bg-gray-600 rounded-lg transition-colors"
                         title="Mettre à jour le solde"
@@ -423,6 +434,14 @@ export function PatrimoinePage() {
           onTransferComplete={() => {
             // Refresh is automatic with useLiveQuery
           }}
+        />
+      )}
+
+      {/* Movements Modal */}
+      {showMovementsModal && (
+        <MovementsModal
+          account={showMovementsModal}
+          onClose={() => setShowMovementsModal(null)}
         />
       )}
     </div>
@@ -1018,5 +1037,265 @@ function CompoundInterestCalculator({ initialCapital = 0 }: CompoundInterestCalc
         </div>
       )}
     </Card>
+  )
+}
+
+// Movements Modal - View and add movements for an account
+interface MovementsModalProps {
+  account: AssetAccount
+  onClose: () => void
+}
+
+function MovementsModal({ account, onClose }: MovementsModalProps) {
+  const toast = useToast()
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [movementType, setMovementType] = useState<'deposit' | 'withdrawal'>('deposit')
+  const [amount, setAmount] = useState('')
+  const [date, setDate] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  })
+  const [description, setDescription] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Load movements for this account
+  const movements = useLiveQuery(
+    () => assetMovementService.getByAccountSortedDesc(account.id),
+    [account.id]
+  ) ?? []
+
+  const handleAddMovement = async () => {
+    if (!amount || parseFloat(amount) <= 0) return
+
+    setIsSubmitting(true)
+    try {
+      const movementAmount = movementType === 'deposit'
+        ? Math.abs(parseFloat(amount))
+        : -Math.abs(parseFloat(amount))
+
+      await assetMovementService.add({
+        accountId: account.id,
+        date,
+        amount: movementAmount,
+        type: movementType,
+        description: description || undefined,
+      })
+
+      await netWorthSnapshotService.createSnapshot()
+
+      toast.success(
+        movementType === 'deposit' ? 'Dépôt ajouté' : 'Retrait ajouté',
+        `${formatMoney(Math.abs(parseFloat(amount)))} ${movementType === 'deposit' ? 'ajouté à' : 'retiré de'} ${account.name}`
+      )
+
+      // Reset form
+      setAmount('')
+      setDescription('')
+      setShowAddForm(false)
+    } catch (error) {
+      console.error('Error adding movement:', error)
+      toast.error('Erreur', 'Impossible d\'ajouter le mouvement')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleDeleteMovement = async (movementId: string) => {
+    if (!confirm('Supprimer ce mouvement ?')) return
+
+    try {
+      await assetMovementService.delete(movementId)
+      await netWorthSnapshotService.createSnapshot()
+      toast.success('Mouvement supprimé', 'Le mouvement a été supprimé et le solde recalculé')
+    } catch (error) {
+      console.error('Error deleting movement:', error)
+      toast.error('Erreur', 'Impossible de supprimer le mouvement')
+    }
+  }
+
+  const preset = ACCOUNT_PRESETS[account.type]
+  const IconComponent = ICONS[account.icon] || Wallet
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <Card className="w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="p-2 rounded-lg"
+              style={{ backgroundColor: `${account.color}20` }}
+            >
+              <IconComponent className="w-5 h-5" style={{ color: account.color }} />
+            </div>
+            <div>
+              <h3 className="font-semibold text-white">{account.name}</h3>
+              <p className="text-sm text-gray-400">Solde: {formatMoney(account.currentBalance)}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
+            <X className="w-5 h-5 text-gray-400" />
+          </button>
+        </div>
+
+        {/* Add movement form */}
+        {showAddForm ? (
+          <div className="border border-gray-600 rounded-lg p-4 mb-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-medium">Nouveau mouvement</h4>
+              <button
+                onClick={() => setShowAddForm(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Type selector */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setMovementType('deposit')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg transition-all ${
+                  movementType === 'deposit'
+                    ? 'bg-green-500/20 text-green-400 border border-green-500/50'
+                    : 'bg-gray-700 text-gray-400 border border-gray-600'
+                }`}
+              >
+                <ArrowUpCircle className="w-4 h-4" />
+                Dépôt
+              </button>
+              <button
+                type="button"
+                onClick={() => setMovementType('withdrawal')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg transition-all ${
+                  movementType === 'withdrawal'
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/50'
+                    : 'bg-gray-700 text-gray-400 border border-gray-600'
+                }`}
+              >
+                <ArrowDownCircle className="w-4 h-4" />
+                Retrait
+              </button>
+            </div>
+
+            {/* Amount */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Montant</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-8"
+                  autoFocus
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">€</span>
+              </div>
+            </div>
+
+            {/* Date */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Date</label>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2"
+              />
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                Description <span className="text-gray-500">(optionnel)</span>
+              </label>
+              <input
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Ex: Virement mensuel"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2"
+              />
+            </div>
+
+            {/* Submit */}
+            <Button
+              variant="primary"
+              onClick={handleAddMovement}
+              disabled={!amount || parseFloat(amount) <= 0 || isSubmitting}
+              className={`w-full ${movementType === 'deposit' ? '!bg-green-600 hover:!bg-green-500' : '!bg-red-600 hover:!bg-red-500'}`}
+            >
+              {isSubmitting ? 'Ajout...' : movementType === 'deposit' ? 'Ajouter le dépôt' : 'Ajouter le retrait'}
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="primary"
+            onClick={() => setShowAddForm(true)}
+            className="mb-4"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Ajouter un mouvement
+          </Button>
+        )}
+
+        {/* Movements list */}
+        <div className="flex-1 overflow-y-auto">
+          <h4 className="font-medium text-gray-400 mb-3">Historique des mouvements</h4>
+
+          {movements.length === 0 ? (
+            <div className="text-center py-8">
+              <History className="w-10 h-10 mx-auto mb-2 text-gray-600" />
+              <p className="text-gray-500">Aucun mouvement enregistré</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Ajoutez des dépôts et retraits pour suivre l'évolution
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {movements.map((movement) => (
+                <div
+                  key={movement.id}
+                  className="flex items-center justify-between py-2 px-3 bg-gray-700/30 rounded-lg group"
+                >
+                  <div className="flex items-center gap-3">
+                    {movement.amount > 0 ? (
+                      <ArrowUpCircle className="w-5 h-5 text-green-400" />
+                    ) : (
+                      <ArrowDownCircle className="w-5 h-5 text-red-400" />
+                    )}
+                    <div>
+                      <p className="text-sm">
+                        {movement.description || (movement.amount > 0 ? 'Dépôt' : 'Retrait')}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {formatDate(movement.date)}
+                        <span className="ml-2 text-gray-600">
+                          Solde après: {formatMoney(movement.balanceAfter)}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-medium ${movement.amount > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {movement.amount > 0 ? '+' : ''}{formatMoney(movement.amount)}
+                    </span>
+                    <button
+                      onClick={() => handleDeleteMovement(movement.id)}
+                      className="p-1 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 rounded transition-all"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="w-4 h-4 text-red-400" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
   )
 }

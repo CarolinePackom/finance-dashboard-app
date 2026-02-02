@@ -11,6 +11,7 @@ import type {
   SavingsContribution,
   MonthlySavingsRecord,
   AssetAccount,
+  AssetMovement,
   Liability,
   BalanceHistory,
   NetWorthSnapshot,
@@ -30,6 +31,7 @@ export class FinanceDB extends Dexie {
   monthlySavingsRecords!: Table<MonthlySavingsRecord>
   // Patrimoine tables
   assetAccounts!: Table<AssetAccount>
+  assetMovements!: Table<AssetMovement>
   liabilities!: Table<Liability>
   balanceHistory!: Table<BalanceHistory>
   netWorthSnapshots!: Table<NetWorthSnapshot>
@@ -85,6 +87,25 @@ export class FinanceDB extends Dexie {
       savingsContributions: 'id, goalId, date',
       monthlySavingsRecords: 'id, month, goalId, [month+goalId]',
       assetAccounts: 'id, type, order',
+      liabilities: 'id, type',
+      balanceHistory: 'id, accountId, date, [accountId+date]',
+      netWorthSnapshots: 'id, date',
+    })
+
+    // Version 5: Add asset movements for tracking deposits/withdrawals
+    this.version(5).stores({
+      transactions: 'id, date, category, type, importId, [date+category]',
+      categories: 'id, name, parentId, order',
+      rules: 'id, categoryId, priority',
+      imports: 'id, importedAt, status',
+      settings: 'id, key',
+      categoryBudgets: 'id, categoryId, group',
+      monthlyBudgetConfigs: 'id, month',
+      savingsGoals: 'id, priority, isCompleted',
+      savingsContributions: 'id, goalId, date',
+      monthlySavingsRecords: 'id, month, goalId, [month+goalId]',
+      assetAccounts: 'id, type, order',
+      assetMovements: 'id, accountId, date, type, [accountId+date]',
       liabilities: 'id, type',
       balanceHistory: 'id, accountId, date, [accountId+date]',
       netWorthSnapshots: 'id, date',
@@ -673,6 +694,93 @@ export const assetAccountService = {
       sourceBalance: newSourceBalance,
       destinationBalance: newDestBalance
     }
+  },
+}
+
+// Asset movement operations (tracking deposits/withdrawals)
+export const assetMovementService = {
+  async getByAccount(accountId: string) {
+    return db.assetMovements
+      .where('accountId')
+      .equals(accountId)
+      .reverse()
+      .sortBy('date')
+  },
+
+  async getByAccountSortedDesc(accountId: string) {
+    const movements = await db.assetMovements
+      .where('accountId')
+      .equals(accountId)
+      .toArray()
+    return movements.sort((a, b) => {
+      const dateCompare = b.date.localeCompare(a.date)
+      if (dateCompare !== 0) return dateCompare
+      return b.createdAt.localeCompare(a.createdAt)
+    })
+  },
+
+  async add(movement: Omit<AssetMovement, 'id' | 'createdAt' | 'balanceAfter'>) {
+    const account = await db.assetAccounts.get(movement.accountId)
+    if (!account) throw new Error('Account not found')
+
+    const newBalance = account.currentBalance + movement.amount
+    const now = new Date().toISOString()
+
+    const fullMovement: AssetMovement = {
+      ...movement,
+      id: crypto.randomUUID(),
+      balanceAfter: newBalance,
+      createdAt: now,
+    }
+
+    // Add movement
+    await db.assetMovements.add(fullMovement)
+
+    // Update account balance
+    await assetAccountService.updateBalance(movement.accountId, newBalance)
+
+    return fullMovement
+  },
+
+  async delete(id: string) {
+    const movement = await db.assetMovements.get(id)
+    if (!movement) return
+
+    // Get account and recalculate balance
+    const account = await db.assetAccounts.get(movement.accountId)
+    if (account) {
+      const newBalance = account.currentBalance - movement.amount
+      await assetAccountService.updateBalance(movement.accountId, newBalance)
+    }
+
+    await db.assetMovements.delete(id)
+  },
+
+  async getRecentForAccount(accountId: string, limit = 10) {
+    const movements = await this.getByAccountSortedDesc(accountId)
+    return movements.slice(0, limit)
+  },
+
+  async getMonthlyTotals(accountId: string, months = 12) {
+    const movements = await db.assetMovements
+      .where('accountId')
+      .equals(accountId)
+      .toArray()
+
+    const totals = new Map<string, { deposits: number; withdrawals: number }>()
+
+    for (const m of movements) {
+      const month = m.date.substring(0, 7)
+      const existing = totals.get(month) || { deposits: 0, withdrawals: 0 }
+      if (m.amount > 0) {
+        existing.deposits += m.amount
+      } else {
+        existing.withdrawals += Math.abs(m.amount)
+      }
+      totals.set(month, existing)
+    }
+
+    return totals
   },
 }
 

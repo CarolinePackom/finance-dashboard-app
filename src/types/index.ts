@@ -283,6 +283,18 @@ export interface AssetAccount {
   updatedAt: string
 }
 
+// Movement/transaction on an asset account (deposit, withdrawal, etc.)
+export interface AssetMovement {
+  id: string
+  accountId: string // Reference to AssetAccount
+  date: string // YYYY-MM-DD
+  amount: number // Positive for deposit, negative for withdrawal
+  type: 'deposit' | 'withdrawal' | 'interest' | 'transfer' | 'adjustment'
+  description?: string
+  balanceAfter: number // Balance after this movement
+  createdAt: string
+}
+
 export interface Liability {
   id: string
   name: string
