@@ -171,12 +171,22 @@ export function BudgetPage() {
   // Use selected month's config, or fall back to latest config for future months
   const effectiveBudgetConfig = budgetConfig || (isFutureMonth ? latestBudgetConfig : null)
 
+  // Calculate total CAF income
+  const cafIncomeTotal = useMemo(() => {
+    if (!effectiveBudgetConfig?.cafIncome) return 0
+    return Object.values(effectiveBudgetConfig.cafIncome).reduce((sum, v) => sum + (v || 0), 0)
+  }, [effectiveBudgetConfig])
+
   const monthlyIncome = useMemo(() => {
+    let baseIncome = 0
     if (effectiveBudgetConfig?.useActualIncome && !isFutureMonth) {
-      return monthlyActualIncome
+      baseIncome = monthlyActualIncome
+    } else {
+      baseIncome = effectiveBudgetConfig?.monthlyIncome || 0
     }
-    return effectiveBudgetConfig?.monthlyIncome || 0
-  }, [effectiveBudgetConfig, isFutureMonth, monthlyActualIncome])
+    // Add CAF income to total
+    return baseIncome + cafIncomeTotal
+  }, [effectiveBudgetConfig, isFutureMonth, monthlyActualIncome, cafIncomeTotal])
 
   // Get fixed charges from current config
   const fixedCharges = useMemo(() => {
@@ -192,6 +202,7 @@ export function BudgetPage() {
       monthlyIncome: existingConfig?.monthlyIncome || 0,
       useActualIncome: existingConfig?.useActualIncome || false,
       fixedCharges: charges,
+      cafIncome: existingConfig?.cafIncome,
       createdAt: existingConfig?.createdAt || new Date().toISOString(),
     }
     await monthlyBudgetConfigService.upsert(configToSave)
@@ -2154,6 +2165,13 @@ interface IncomeConfigModalProps {
 
 type WizardStep = 'income' | 'fixed-charges'
 
+// CAF income types
+const CAF_INCOME_TYPES = [
+  { key: 'primeActivite', name: "Prime d'activité", placeholder: '150' },
+  { key: 'apl', name: 'APL', placeholder: '300' },
+  { key: 'paje', name: 'PAJE', placeholder: '180' },
+]
+
 function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualIncome, categories, onClose, onSave }: IncomeConfigModalProps) {
   // Use existing config, or base config for new months
   const effectiveConfig = config || baseConfig
@@ -2161,6 +2179,18 @@ function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualInc
   const [step, setStep] = useState<WizardStep>('income')
   const [income, setIncome] = useState(effectiveConfig?.monthlyIncome?.toString() || '')
   const [useActual, setUseActual] = useState(isFutureMonth ? false : (effectiveConfig?.useActualIncome ?? false))
+  const [showCaf, setShowCaf] = useState(() => {
+    // Show CAF section if any CAF income exists
+    const cafIncome = effectiveConfig?.cafIncome
+    return cafIncome && Object.values(cafIncome).some(v => v && v > 0)
+  })
+  const [cafIncome, setCafIncome] = useState<Record<string, string>>(() => {
+    const caf: Record<string, string> = {}
+    for (const type of CAF_INCOME_TYPES) {
+      caf[type.key] = effectiveConfig?.cafIncome?.[type.key]?.toString() || ''
+    }
+    return caf
+  })
 
   // Initialize fixed charges from config or defaults
   const [fixedCharges, setFixedCharges] = useState<Record<string, { amount: string; categoryId: string; enabled: boolean }>>(() => {
@@ -2199,12 +2229,22 @@ function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualInc
         isEnabled: fixedCharges[defaultCharge.key]?.enabled ?? true,
       }))
 
+      // Build CAF income object
+      const cafIncomeData: Record<string, number> = {}
+      for (const type of CAF_INCOME_TYPES) {
+        const amount = parseFloat(cafIncome[type.key]) || 0
+        if (amount > 0) {
+          cafIncomeData[type.key] = amount
+        }
+      }
+
       const newConfig: MonthlyBudgetConfig = {
         id: config?.id || uuidv4(),
         month,
         monthlyIncome: parseFloat(income) || 0,
         useActualIncome: useActual,
         fixedCharges: chargesArray,
+        cafIncome: Object.keys(cafIncomeData).length > 0 ? cafIncomeData : undefined,
         createdAt: config?.createdAt || new Date().toISOString(),
       }
 
@@ -2332,6 +2372,65 @@ function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualInc
                     </p>
                   </div>
                 </label>
+              )}
+
+              {/* CAF Income Section */}
+              <div className="border border-gray-600 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowCaf(!showCaf)}
+                  className="w-full flex items-center justify-between p-3 bg-gray-700/50 hover:bg-gray-700 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-cyan-400 font-medium">CAF</span>
+                    {Object.values(cafIncome).some(v => v && parseFloat(v) > 0) && (
+                      <span className="text-xs bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded">
+                        +{formatMoney(Object.values(cafIncome).reduce((sum, v) => sum + (parseFloat(v) || 0), 0))}
+                      </span>
+                    )}
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showCaf ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showCaf && (
+                  <div className="p-3 space-y-3 bg-gray-800/50">
+                    <p className="text-xs text-gray-500">Ajoutez vos aides CAF au revenu total</p>
+                    {CAF_INCOME_TYPES.map(type => (
+                      <div key={type.key} className="flex items-center gap-2">
+                        <label className="w-32 text-sm text-gray-400">{type.name}</label>
+                        <input
+                          type="number"
+                          value={cafIncome[type.key] || ''}
+                          onChange={(e) => setCafIncome(prev => ({ ...prev, [type.key]: e.target.value }))}
+                          placeholder={type.placeholder}
+                          className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm"
+                        />
+                        <span className="text-gray-500 text-sm">€</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between pt-2 border-t border-gray-700 text-sm">
+                      <span className="text-gray-400">Total CAF</span>
+                      <span className="text-cyan-400 font-medium">
+                        {formatMoney(Object.values(cafIncome).reduce((sum, v) => sum + (parseFloat(v) || 0), 0))}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Total income preview */}
+              {(parseFloat(income) > 0 || Object.values(cafIncome).some(v => parseFloat(v) > 0)) && (
+                <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Revenu total</span>
+                    <span className="text-green-400 font-bold text-lg">
+                      {formatMoney(
+                        (useActual ? actualIncome : (parseFloat(income) || 0)) +
+                        Object.values(cafIncome).reduce((sum, v) => sum + (parseFloat(v) || 0), 0)
+                      )}
+                    </span>
+                  </div>
+                </div>
               )}
 
               {/* Actions */}

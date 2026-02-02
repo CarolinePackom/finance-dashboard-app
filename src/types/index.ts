@@ -206,6 +206,7 @@ export interface MonthlyBudgetConfig {
   monthlyIncome: number // Expected income for the month
   useActualIncome: boolean // Use actual income from transactions instead
   fixedCharges: FixedCharge[] // Configured fixed monthly charges
+  cafIncome?: Record<string, number> // CAF income (prime d'activité, APL, PAJE, etc.)
   createdAt: string
 }
 
