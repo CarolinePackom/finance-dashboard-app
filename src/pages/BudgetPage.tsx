@@ -1057,68 +1057,79 @@ function BudgetOverview({
         })}
       </div>
 
-      {/* Dépenses à classer */}
+      {/* Gestion des dépenses du mois */}
       {(() => {
-        const unassignedTransactions = transactions.filter(t => t.amount < 0 && !t.budgetGroup)
-        if (unassignedTransactions.length === 0) return null
+        // Toutes les dépenses du mois (sauf ignorées)
+        const allExpenses = transactions.filter(t => t.amount < 0 && t.budgetGroup !== 'ignored')
+        const unassignedCount = transactions.filter(t => t.amount < 0 && !t.budgetGroup).length
+
         return (
-          <Card className="border-2 border-dashed border-yellow-500/30">
+          <Card>
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-yellow-500/20">
-                <AlertTriangle className="w-5 h-5 text-yellow-400" />
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${unassignedCount > 0 ? 'bg-yellow-500/20' : 'bg-gray-700'}`}>
+                <List className={`w-5 h-5 ${unassignedCount > 0 ? 'text-yellow-400' : 'text-gray-400'}`} />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Dépenses à classer</h3>
-                <p className="text-xs text-gray-400">{unassignedTransactions.length} transaction(s) non assignée(s)</p>
+                <h3 className="text-lg font-bold text-white">Dépenses du mois</h3>
+                <p className="text-xs text-gray-400">
+                  {allExpenses.length} dépense(s)
+                  {unassignedCount > 0 && <span className="text-yellow-400 ml-1">• {unassignedCount} à classer</span>}
+                </p>
               </div>
             </div>
-            <div className="space-y-2">
-              {unassignedTransactions.map(t => {
-                const category = categories.find(c => c.id === t.category)
-                return (
-                  <div key={t.id} className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <div
-                        className="w-3 h-3 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: category?.color || '#94a3b8' }}
-                      />
-                      <div className="min-w-0">
-                        <p className="text-sm text-white truncate">{t.description}</p>
-                        <p className="text-xs text-gray-500">{category?.name || 'Non catégorisé'} • {t.date}</p>
+            {allExpenses.length > 0 ? (
+              <div className="space-y-2">
+                {allExpenses.map(t => {
+                  const category = categories.find(c => c.id === t.category)
+                  const isAssignedNeeds = t.budgetGroup === 'needs'
+                  const isAssignedWants = t.budgetGroup === 'wants'
+                  return (
+                    <div key={t.id} className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: category?.color || '#94a3b8' }}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm text-white truncate">{t.description}</p>
+                          <p className="text-xs text-gray-500">{category?.name || 'Non catégorisé'} • {t.date}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-white">{formatMoney(Math.abs(t.amount))}</span>
+                        <button
+                          onClick={async () => {
+                            await db.transactions.update(t.id, { budgetGroup: 'needs' })
+                          }}
+                          className={`px-2 py-1 text-xs rounded ${isAssignedNeeds ? 'bg-blue-500 text-white' : 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'}`}
+                        >
+                          Besoins
+                        </button>
+                        <button
+                          onClick={async () => {
+                            await db.transactions.update(t.id, { budgetGroup: 'wants' })
+                          }}
+                          className={`px-2 py-1 text-xs rounded ${isAssignedWants ? 'bg-yellow-500 text-white' : 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'}`}
+                        >
+                          Envies
+                        </button>
+                        <button
+                          onClick={async () => {
+                            await db.transactions.update(t.id, { budgetGroup: 'ignored' })
+                          }}
+                          className="p-1 text-gray-400 hover:bg-red-500/20 hover:text-red-400 rounded"
+                          title="Ignorer (ne pas comptabiliser)"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-white">{formatMoney(Math.abs(t.amount))}</span>
-                      <button
-                        onClick={async () => {
-                          await db.transactions.update(t.id, { budgetGroup: 'needs' })
-                        }}
-                        className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30"
-                      >
-                        Besoins
-                      </button>
-                      <button
-                        onClick={async () => {
-                          await db.transactions.update(t.id, { budgetGroup: 'wants' })
-                        }}
-                        className="px-2 py-1 text-xs bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30"
-                      >
-                        Envies
-                      </button>
-                      <button
-                        onClick={async () => {
-                          await db.transactions.delete(t.id)
-                        }}
-                        className="p-1 text-red-400 hover:bg-red-500/20 rounded"
-                        title="Supprimer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500 text-center py-4">Aucune dépense ce mois-ci</p>
+            )}
           </Card>
         )
       })()}
