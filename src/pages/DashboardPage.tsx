@@ -13,6 +13,7 @@ import {
   History,
   Table,
   Users,
+  Clock,
 } from 'lucide-react'
 import { useTransactions } from '@store/TransactionContext'
 import { transactionService } from '@services/db'
@@ -43,7 +44,7 @@ import { LazyExpensesPieChart, LazyDailyBarChart, LazyMonthlyComparisonChart } f
 import { TransactionList, CategoryFilterButton } from '@components/transactions'
 import { AdvisorPanel } from '@components/advisor'
 import { QuickAddExpense } from '@components/budget/QuickAddExpense'
-import { formatDate } from '@utils/formatters'
+import { formatDate, formatMoney } from '@utils/formatters'
 import { categoryBudgetService, settingsService } from '@services/db'
 import { useLiveQuery } from 'dexie-react-hooks'
 
@@ -370,6 +371,62 @@ export function DashboardPage() {
               />
             </Card>
           )}
+
+          {/* Recent transactions */}
+          <Card>
+            <CardTitle icon={<Clock className="w-5 h-5 text-blue-400" />}>
+              Dernières transactions
+            </CardTitle>
+            <div className="space-y-2 mt-4">
+              {allTransactions
+                .slice()
+                .sort((a, b) => {
+                  // Sort by date desc, then by createdAt desc for same date
+                  const dateCompare = b.date.localeCompare(a.date)
+                  if (dateCompare !== 0) return dateCompare
+                  return (b.createdAt || '').localeCompare(a.createdAt || '')
+                })
+                .slice(0, 15)
+                .map((t) => {
+                  const category = categories.find(c => c.id === t.category)
+                  return (
+                    <div
+                      key={t.id}
+                      className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-gray-700/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div
+                          className="w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: category?.color || '#6b7280' }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm truncate">{t.description}</p>
+                          <p className="text-xs text-gray-500">
+                            {formatDate(t.date)}
+                            {category && ` • ${category.name}`}
+                            {t.assignedTo && ` • ${t.assignedTo}`}
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`text-sm font-medium ml-3 ${t.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {t.amount >= 0 ? '+' : ''}{formatMoney(t.amount)}
+                      </span>
+                    </div>
+                  )
+                })}
+              {allTransactions.length === 0 && (
+                <p className="text-center text-gray-500 py-4">Aucune transaction</p>
+              )}
+              {allTransactions.length > 15 && (
+                <button
+                  onClick={() => setActiveTab('transactions')}
+                  className="w-full text-center text-sm text-blue-400 hover:text-blue-300 py-2 mt-2"
+                >
+                  Voir toutes les transactions →
+                </button>
+              )}
+            </div>
+          </Card>
 
           {/* Monthly comparison */}
           {months.length > 1 && (
