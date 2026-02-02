@@ -757,18 +757,6 @@ function BudgetOverview({
             t.amount < 0 && t.budgetGroup === group.id
           )
 
-          // DEBUG
-          if (group.id === 'needs') {
-            console.log('=== DEBUG TRANSACTIONS ===')
-            console.log('Mois affiché:', transactions.length > 0 ? transactions[0]?.date?.substring(0, 7) : 'aucune transaction')
-            console.log('Total transactions du mois:', transactions.length)
-            console.log('Dépenses du mois:', transactions.filter(t => t.amount < 0).length)
-            console.log('Assignées à needs:', assignedTransactions.length)
-            // Chercher Croquettes dans TOUTES les transactions
-            db.transactions.filter(t => t.description?.toLowerCase().includes('croquettes')).toArray().then(found => {
-              console.log('Croquettes trouvées (toute la DB):', found.map(t => ({ desc: t.description, date: t.date, amount: t.amount })))
-            })
-          }
           const variableSpent = assignedTransactions.reduce((sum, t) => sum + Math.abs(t.amount), 0)
           const totalSpent = fixedSpent + variableSpent
 
@@ -777,6 +765,16 @@ function BudgetOverview({
           const percentUsed = budgetInfo.limit > 0 ? (totalSpent / budgetInfo.limit) * 100 : 0
           const isOverBudget = totalSpent > budgetInfo.limit
           const isWarning = percentUsed >= 80 && percentUsed < 100
+
+          // DEBUG
+          if (group.id === 'needs') {
+            console.log('=== DEBUG BESOINS ===')
+            console.log('fixedSpent:', fixedSpent)
+            console.log('Assignées à needs:', assignedTransactions.map(t => ({ desc: t.description, amount: t.amount })))
+            console.log('variableSpent:', variableSpent)
+            console.log('totalSpent:', totalSpent)
+            console.log('remaining:', remaining)
+          }
 
           // Get category breakdown for variable spending
           // For "needs": only explicitly assigned categories, EXCLUDING fixed charge categories
@@ -948,7 +946,7 @@ function BudgetOverview({
                 </div>
               </div>
 
-              {/* Fixed Charges Section - Only for Besoins */}
+              {/* Dépenses Besoins - Charges fixes + transactions assignées */}
               {group.id === 'needs' && (
                 <div className="mb-4 p-3 bg-gray-800/30 rounded-lg">
                   <InlineFixedCharges
@@ -958,12 +956,50 @@ function BudgetOverview({
                     onChange={onFixedChargesChange}
                     groupColor={group.color}
                     spendingByCategory={spendingByCategory}
+                    assignedTransactionsTotal={variableSpent}
+                    assignedTransactionsCount={assignedTransactions.length}
                   />
+                  {/* Transactions assignées à Besoins */}
+                  {assignedTransactions.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-gray-700">
+                      <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
+                        Dépenses réelles ({assignedTransactions.length})
+                      </p>
+                      <div className="space-y-2">
+                        {assignedTransactions.map(t => {
+                          const category = categoryMap.get(t.category)
+                          return (
+                            <div key={t.id} className="flex items-center justify-between p-2 bg-gray-700/30 rounded">
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <div
+                                  className="w-2 h-2 rounded-full flex-shrink-0"
+                                  style={{ backgroundColor: category?.color || '#94a3b8' }}
+                                />
+                                <span className="text-sm text-white truncate">{t.description}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-white">{formatMoney(Math.abs(t.amount))}</span>
+                                <button
+                                  onClick={async () => {
+                                    await db.transactions.update(t.id, { budgetGroup: 'wants' })
+                                  }}
+                                  className="p-1 hover:bg-gray-600 rounded text-gray-400 hover:text-white"
+                                  title="Déplacer vers Envies"
+                                >
+                                  <ArrowRight className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Transactions assignées à ce groupe */}
-              {assignedTransactions.length > 0 && (
+              {/* Transactions assignées à Envies */}
+              {group.id === 'wants' && assignedTransactions.length > 0 && (
                 <div className="mb-4 p-3 bg-gray-800/30 rounded-lg">
                   <p className="text-xs text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-2">
                     <List className="w-3 h-3" />
@@ -985,13 +1021,12 @@ function BudgetOverview({
                             <span className="text-sm font-medium text-white">{formatMoney(Math.abs(t.amount))}</span>
                             <button
                               onClick={async () => {
-                                const newGroup = group.id === 'needs' ? 'wants' : 'needs'
-                                await db.transactions.update(t.id, { budgetGroup: newGroup })
+                                await db.transactions.update(t.id, { budgetGroup: 'needs' })
                               }}
                               className="p-1 hover:bg-gray-600 rounded text-gray-400 hover:text-white"
-                              title={`Déplacer vers ${group.id === 'needs' ? 'Envies' : 'Besoins'}`}
+                              title="Déplacer vers Besoins"
                             >
-                              {group.id === 'needs' ? <ArrowRight className="w-4 h-4" /> : <ArrowLeft className="w-4 h-4" />}
+                              <ArrowLeft className="w-4 h-4" />
                             </button>
                           </div>
                         </div>

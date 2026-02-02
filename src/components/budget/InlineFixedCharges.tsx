@@ -10,6 +10,8 @@ interface InlineFixedChargesProps {
   onChange: (charges: FixedCharge[]) => void
   groupColor: string
   spendingByCategory?: Map<string, number> // Actual spending per category
+  assignedTransactionsTotal?: number // Total of assigned transactions for this group
+  assignedTransactionsCount?: number // Count of assigned transactions
 }
 
 // Suggested charges by group
@@ -46,6 +48,8 @@ export function InlineFixedCharges({
   onChange,
   groupColor,
   spendingByCategory = new Map(),
+  assignedTransactionsTotal = 0,
+  assignedTransactionsCount = 0,
 }: InlineFixedChargesProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -265,13 +269,13 @@ export function InlineFixedCharges({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Repeat className="w-4 h-4" style={{ color: groupColor }} />
-          <span className="text-sm font-medium text-gray-300">Charges fixes</span>
-          {enabledCharges.length > 0 && (
-            <span className="text-xs text-gray-500">({enabledCharges.length})</span>
+          <span className="text-sm font-medium text-gray-300">Dépenses</span>
+          {(enabledCharges.length + assignedTransactionsCount) > 0 && (
+            <span className="text-xs text-gray-500">({enabledCharges.length + assignedTransactionsCount})</span>
           )}
         </div>
-        {totalEnabled > 0 && (
-          <span className="text-sm font-semibold text-red-400">-{formatMoney(totalEnabled)}</span>
+        {(totalEnabled + assignedTransactionsTotal) > 0 && (
+          <span className="text-sm font-semibold text-red-400">-{formatMoney(totalEnabled + assignedTransactionsTotal)}</span>
         )}
       </div>
 
