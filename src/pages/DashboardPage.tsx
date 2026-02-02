@@ -564,6 +564,7 @@ export function DashboardPage() {
         categoryBudgets={categoryBudgets}
         onTransactionAdded={handleTransactionAdded}
         budgetMonth={currentMonth}
+        householdMembers={householdMembers}
       />
     </div>
   )

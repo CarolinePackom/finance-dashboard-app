@@ -86,11 +86,17 @@ export function BudgetPage() {
 
   // Load initial balance for bank balance calculation
   const [initialBalance, setInitialBalance] = useState<number | null>(null)
+  const [householdMembers, setHouseholdMembers] = useState<string[]>([])
 
   useEffect(() => {
     let isMounted = true
     settingsService.getInitialBalance().then(balance => {
       if (isMounted) setInitialBalance(balance)
+    })
+    settingsService.get('householdMembers').then(members => {
+      if (isMounted && Array.isArray(members)) {
+        setHouseholdMembers(members)
+      }
     })
     return () => { isMounted = false }
   }, [])
@@ -397,6 +403,7 @@ export function BudgetPage() {
         categories={categories}
         categoryBudgets={categoryBudgets}
         budgetMonth={selectedBudgetMonth}
+        householdMembers={householdMembers}
         onTransactionAdded={() => {
           toast.success('Dépense ajoutée', 'Votre dépense a été enregistrée')
         }}

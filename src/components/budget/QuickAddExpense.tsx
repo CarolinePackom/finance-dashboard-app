@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Plus, X, ShoppingBag, Home, Wallet, TrendingUp, TrendingDown, Banknote } from 'lucide-react'
+import { Plus, X, ShoppingBag, Home, TrendingUp, TrendingDown, User } from 'lucide-react'
 import { v4 as uuidv4 } from 'uuid'
 import { Card, CardTitle, Button } from '@components/common'
 import { transactionService } from '@services/db'
@@ -11,6 +11,7 @@ interface QuickAddExpenseProps {
   categoryBudgets: CategoryBudget[]
   onTransactionAdded: () => void
   budgetMonth: string // YYYY-MM
+  householdMembers?: string[]
 }
 
 type TransactionMode = 'expense' | 'income'
@@ -20,6 +21,7 @@ export function QuickAddExpense({
   categoryBudgets,
   onTransactionAdded,
   budgetMonth,
+  householdMembers = [],
 }: QuickAddExpenseProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [mode, setMode] = useState<TransactionMode>('expense')
@@ -28,6 +30,7 @@ export function QuickAddExpense({
   const [categoryId, setCategoryId] = useState('')
   const [description, setDescription] = useState('')
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [assignedTo, setAssignedTo] = useState<string>('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Get categories based on mode
@@ -67,6 +70,7 @@ export function QuickAddExpense({
         isManuallyEdited: false,
         source: 'manual',
         budgetGroup: mode === 'expense' ? budgetGroup : undefined,
+        assignedTo: assignedTo || undefined,
         createdAt: now,
         updatedAt: now,
       }
@@ -78,6 +82,7 @@ export function QuickAddExpense({
       setDescription('')
       setDate(new Date().toISOString().split('T')[0])
       setCategoryId('')
+      setAssignedTo('')
       setIsOpen(false)
 
       onTransactionAdded()
@@ -270,6 +275,44 @@ export function QuickAddExpense({
                 />
               </div>
 
+              {/* Assigned To - Only show if household members exist */}
+              {householdMembers.length > 0 && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">
+                    Imputer à <span className="text-gray-500">(optionnel)</span>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAssignedTo('')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all text-sm ${
+                        assignedTo === ''
+                          ? 'border-purple-500 bg-purple-500/20 text-purple-400'
+                          : 'border-gray-600 bg-gray-700/30 text-gray-400 hover:border-gray-500'
+                      }`}
+                    >
+                      <User className="w-4 h-4" />
+                      Personne
+                    </button>
+                    {householdMembers.map(member => (
+                      <button
+                        key={member}
+                        type="button"
+                        onClick={() => setAssignedTo(member)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all text-sm ${
+                          assignedTo === member
+                            ? 'border-purple-500 bg-purple-500/20 text-purple-400'
+                            : 'border-gray-600 bg-gray-700/30 text-gray-400 hover:border-gray-500'
+                        }`}
+                      >
+                        <User className="w-4 h-4" />
+                        {member}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Preview */}
               {amount && parseFloat(amount) > 0 && (
                 <div className={`p-3 rounded-lg ${
@@ -292,6 +335,11 @@ export function QuickAddExpense({
                       {selectedCategory && (
                         <span className="text-xs text-gray-500">
                           • {selectedCategory.name}
+                        </span>
+                      )}
+                      {assignedTo && (
+                        <span className="text-xs bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
+                          → {assignedTo}
                         </span>
                       )}
                     </div>
