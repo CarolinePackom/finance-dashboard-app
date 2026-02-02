@@ -9,6 +9,7 @@ interface InlineFixedChargesProps {
   categories: Category[]
   onChange: (charges: FixedCharge[]) => void
   groupColor: string
+  spendingByCategory?: Map<string, number> // Actual spending per category
 }
 
 // Suggested charges by group
@@ -44,6 +45,7 @@ export function InlineFixedCharges({
   categories,
   onChange,
   groupColor,
+  spendingByCategory = new Map(),
 }: InlineFixedChargesProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -228,67 +230,109 @@ export function InlineFixedCharges({
               )
             }
 
+            // Get actual spending for this charge's category
+            const spent = spendingByCategory.get(charge.categoryId) || 0
+            const percentSpent = charge.amount > 0 ? Math.min((spent / charge.amount) * 100, 100) : 0
+            const isOverBudget = spent > charge.amount
+
             return (
               <div
                 key={charge.key}
-                className={`group flex items-center gap-2 p-2 rounded-lg transition-all ${
+                className={`group p-2 rounded-lg transition-all ${
                   charge.isEnabled
                     ? 'bg-gray-800/50 hover:bg-gray-800'
                     : 'bg-gray-900/30 opacity-50'
                 }`}
               >
-                {/* Toggle */}
-                <button
-                  onClick={() => handleToggle(charge.key)}
-                  className={`w-4 h-4 rounded border flex items-center justify-center transition-colors flex-shrink-0 ${
-                    charge.isEnabled ? 'border-blue-500 bg-blue-500' : 'border-gray-600'
-                  }`}
-                >
-                  {charge.isEnabled && <Check className="w-2.5 h-2.5 text-white" />}
-                </button>
-
-                {/* Name & category */}
-                <div className="flex-1 min-w-0">
-                  <span
-                    className={`text-sm ${charge.isEnabled ? 'text-white' : 'text-gray-500 line-through'}`}
+                <div className="flex items-center gap-2">
+                  {/* Toggle */}
+                  <button
+                    onClick={() => handleToggle(charge.key)}
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-colors flex-shrink-0 ${
+                      charge.isEnabled ? 'border-blue-500 bg-blue-500' : 'border-gray-600'
+                    }`}
                   >
-                    {charge.name}
-                  </span>
-                  {category && (
+                    {charge.isEnabled && <Check className="w-2.5 h-2.5 text-white" />}
+                  </button>
+
+                  {/* Name & category */}
+                  <div className="flex-1 min-w-0">
                     <span
-                      className="ml-2 text-xs px-1 py-0.5 rounded"
-                      style={{ backgroundColor: `${category.color}20`, color: category.color }}
+                      className={`text-sm ${charge.isEnabled ? 'text-white' : 'text-gray-500 line-through'}`}
                     >
-                      {category.name}
+                      {charge.name}
                     </span>
-                  )}
+                    {category && (
+                      <span
+                        className="ml-2 text-xs px-1 py-0.5 rounded"
+                        style={{ backgroundColor: `${category.color}20`, color: category.color }}
+                      >
+                        {category.name}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Spending vs budget */}
+                  <div className="text-right flex-shrink-0">
+                    <span
+                      className={`text-sm font-medium ${
+                        charge.isEnabled
+                          ? isOverBudget
+                            ? 'text-red-400'
+                            : spent > 0
+                              ? 'text-yellow-400'
+                              : 'text-gray-400'
+                          : 'text-gray-600'
+                      }`}
+                    >
+                      {formatMoney(spent)}
+                    </span>
+                    <span className="text-gray-500 text-sm"> / {formatMoney(charge.amount)}</span>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handleEdit(charge)}
+                      className="p-1 hover:bg-gray-700 rounded transition-colors"
+                      title="Modifier"
+                    >
+                      <Pencil className="w-3 h-3 text-gray-400" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(charge.key)}
+                      className="p-1 hover:bg-red-500/20 rounded transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3 text-red-400" />
+                    </button>
+                  </div>
                 </div>
 
-                {/* Amount */}
-                <span
-                  className={`text-sm font-medium flex-shrink-0 ${
-                    charge.isEnabled ? 'text-red-400' : 'text-gray-600'
-                  }`}
-                >
-                  -{formatMoney(charge.amount)}
-                </span>
-
-                {/* Actions */}
-                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => handleEdit(charge)}
-                    className="p-1 hover:bg-gray-700 rounded transition-colors"
-                    title="Modifier"
-                  >
-                    <Pencil className="w-3 h-3 text-gray-400" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(charge.key)}
-                    className="p-1 hover:bg-red-500/20 rounded transition-colors"
-                  >
-                    <Trash2 className="w-3 h-3 text-red-400" />
-                  </button>
-                </div>
+                {/* Progress bar */}
+                {charge.isEnabled && charge.amount > 0 && (
+                  <div className="mt-1.5 ml-6">
+                    <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          isOverBudget
+                            ? 'bg-red-500'
+                            : percentSpent >= 80
+                              ? 'bg-yellow-500'
+                              : 'bg-green-500'
+                        }`}
+                        style={{ width: `${percentSpent}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-0.5 text-right">
+                      {percentSpent.toFixed(0)}%
+                      {isOverBudget && (
+                        <span className="text-red-400 ml-1">
+                          (+{formatMoney(spent - charge.amount)})
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
             )
           })}

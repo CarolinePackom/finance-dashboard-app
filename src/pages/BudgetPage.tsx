@@ -907,6 +907,7 @@ function BudgetOverview({
                     categories={categories}
                     onChange={onFixedChargesChange}
                     groupColor={group.color}
+                    spendingByCategory={spendingByCategory}
                   />
                 </div>
               )}
