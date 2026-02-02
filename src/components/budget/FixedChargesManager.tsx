@@ -22,9 +22,9 @@ interface FixedChargesManagerProps {
 
 // Suggested charges for quick add
 const SUGGESTED_CHARGES = [
-  { name: 'Loyer', categoryId: 'housing', icon: 'home' },
-  { name: 'Électricité', categoryId: 'housing', icon: 'energy' },
-  { name: 'Gaz', categoryId: 'housing', icon: 'energy' },
+  { name: 'Loyer', categoryId: 'loyer', icon: 'home' },
+  { name: 'Électricité', categoryId: 'energie', icon: 'energy' },
+  { name: 'Gaz', categoryId: 'energie', icon: 'energy' },
   { name: 'Internet', categoryId: 'telecom', icon: 'phone' },
   { name: 'Téléphone', categoryId: 'telecom', icon: 'phone' },
   { name: 'Assurance habitation', categoryId: 'bank-fees', icon: 'shield' },

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Plus, Pencil, Trash2, X, Check, Repeat } from 'lucide-react'
 import { formatMoney } from '@utils/formatters'
 import type { FixedCharge, Category, BudgetGroupType } from '@/types'
@@ -15,10 +15,10 @@ interface InlineFixedChargesProps {
 // Suggested charges by group
 const SUGGESTED_BY_GROUP: Record<BudgetGroupType, Array<{ name: string; categoryId: string }>> = {
   needs: [
-    { name: 'Loyer', categoryId: 'housing' },
-    { name: 'Électricité', categoryId: 'housing' },
-    { name: 'Gaz', categoryId: 'housing' },
-    { name: 'Eau', categoryId: 'housing' },
+    { name: 'Loyer', categoryId: 'loyer' },
+    { name: 'Électricité', categoryId: 'energie' },
+    { name: 'Gaz', categoryId: 'energie' },
+    { name: 'Eau', categoryId: 'energie' },
     { name: 'Internet', categoryId: 'telecom' },
     { name: 'Téléphone', categoryId: 'telecom' },
     { name: 'Assurance habitation', categoryId: 'bank-fees' },
@@ -56,8 +56,100 @@ export function InlineFixedCharges({
   const [formAmount, setFormAmount] = useState('')
   const [formCategory, setFormCategory] = useState('')
 
-  // Show all charges (no filtering by group since fixed charges are only in Besoins)
-  const groupCharges = charges
+  // Normalize charge name for deduplication and get canonical display name
+  const normalizeChargeName = (name: string, categoryId: string): { key: string; displayName: string } => {
+    const lower = name.toLowerCase().trim()
+
+    // Check for "loyer" variations
+    if (lower.includes('loyer') && !lower.includes('électricité') && !lower.includes('gaz') && !lower.includes('energie') && !lower.includes('énergie')) {
+      return { key: 'loyer', displayName: 'Loyer' }
+    }
+
+    // Check for energy variations
+    if (lower.includes('électricité') || lower.includes('electricité') || lower.includes('gaz') ||
+        lower === 'energie' || lower === 'énergie' || lower.includes('energie') || lower.includes('énergie')) {
+      // But not if it also contains "loyer" (that's a combined entry)
+      if (!lower.includes('loyer')) {
+        return { key: 'energie', displayName: 'Énergie' }
+      }
+    }
+
+    // Combined "loyer energie" or similar - this is ambiguous
+    if (lower.includes('loyer') && (lower.includes('energie') || lower.includes('énergie') || lower.includes('gaz'))) {
+      // Use categoryId to determine what it really is
+      if (categoryId === 'loyer') {
+        return { key: 'loyer', displayName: 'Loyer' }
+      } else if (categoryId === 'energie' || categoryId === 'housing') {
+        return { key: 'energie', displayName: 'Énergie' }
+      }
+      // Default to garbage if no clear category
+      return { key: '__garbage__', displayName: '' }
+    }
+
+    // Keep original for other charges
+    return { key: lower, displayName: name.trim() }
+  }
+
+  // Clean and deduplicate charges
+  const cleanedCharges = useMemo(() => {
+    const seen = new Map<string, FixedCharge>()
+
+    for (const charge of charges) {
+      // Skip charges with no amount and empty name
+      if (charge.amount === 0 && charge.name.trim() === '') continue
+
+      const { key, displayName } = normalizeChargeName(charge.name, charge.categoryId)
+
+      // Skip garbage entries with 0 amount
+      if (key === '__garbage__' && charge.amount === 0) continue
+      if (key === '__garbage__') continue // Skip all ambiguous garbage
+
+      const existing = seen.get(key)
+      if (!existing) {
+        // Update name to canonical form and ensure correct categoryId
+        // LOYER is always "fixed" (no tracking) - it's a pure fixed charge
+        const cleanedCharge = {
+          ...charge,
+          name: displayName,
+          categoryId: key === 'loyer' ? 'fixed' : (key === 'energie' ? 'energie' : charge.categoryId),
+        }
+        seen.set(key, cleanedCharge)
+      } else {
+        // Keep the one with higher amount, merge if needed
+        if (charge.amount > existing.amount) {
+          const cleanedCharge = {
+            ...charge,
+            name: displayName,
+            categoryId: key === 'loyer' ? 'fixed' : (key === 'energie' ? 'energie' : charge.categoryId),
+          }
+          seen.set(key, cleanedCharge)
+        }
+      }
+    }
+
+    return Array.from(seen.values())
+  }, [charges])
+
+  // Auto-cleanup: if issues were found, save the cleaned version
+  const hasCleanedUp = useRef(false)
+  useEffect(() => {
+    if (hasCleanedUp.current) return
+
+    // Check if any charge needs cleaning (different length or different categoryId)
+    const needsCleanup = charges.length !== cleanedCharges.length ||
+      charges.some(c => {
+        const cleaned = cleanedCharges.find(cc => cc.key === c.key || cc.name.toLowerCase() === c.name.toLowerCase())
+        return cleaned && cleaned.categoryId !== c.categoryId
+      })
+
+    if (needsCleanup) {
+      hasCleanedUp.current = true
+      console.log(`🧹 Nettoyage des charges fixes`)
+      onChange(cleanedCharges)
+    }
+  }, [charges, cleanedCharges, onChange])
+
+  const groupCharges = cleanedCharges
 
   const enabledCharges = useMemo(
     () => groupCharges.filter(c => c.isEnabled),
@@ -88,6 +180,22 @@ export function InlineFixedCharges({
 
   const handleAdd = () => {
     if (!formName.trim() || !formAmount || !formCategory) return
+
+    // Check if a charge with this name already exists
+    const nameKey = formName.trim().toLowerCase()
+    const existingCharge = groupCharges.find(c => c.name.toLowerCase() === nameKey)
+    if (existingCharge) {
+      // Update the existing charge instead of adding a duplicate
+      onChange(
+        charges.map(c =>
+          c.key === existingCharge.key
+            ? { ...c, amount: parseFloat(formAmount), categoryId: formCategory, isEnabled: true }
+            : c
+        )
+      )
+      resetForm()
+      return
+    }
 
     // FixedCharge.budgetGroup only allows 'needs' | 'wants', not 'savings'
     const fixedChargeBudgetGroup = budgetGroup === 'savings' ? undefined : budgetGroup
@@ -204,6 +312,7 @@ export function InlineFixedCharges({
                       className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
                     >
                       <option value="">Catégorie</option>
+                      <option value="fixed">Fixe (pas de suivi)</option>
                       {expenseCategories.map(cat => (
                         <option key={cat.id} value={cat.id}>
                           {cat.name}
@@ -230,10 +339,13 @@ export function InlineFixedCharges({
               )
             }
 
-            // Get actual spending for this charge's category
-            const spent = spendingByCategory.get(charge.categoryId) || 0
-            const percentSpent = charge.amount > 0 ? Math.min((spent / charge.amount) * 100, 100) : 0
-            const isOverBudget = spent > charge.amount
+            // Check if this is a "fixed" charge (no spending tracking)
+            const isFixedOnly = charge.categoryId === 'fixed' || !charge.categoryId
+
+            // Get actual spending for this charge's category (only if tracking)
+            const spent = isFixedOnly ? 0 : (spendingByCategory.get(charge.categoryId) || 0)
+            const percentSpent = !isFixedOnly && charge.amount > 0 ? Math.min((spent / charge.amount) * 100, 100) : 0
+            const isOverBudget = !isFixedOnly && spent > charge.amount
 
             return (
               <div
@@ -262,7 +374,11 @@ export function InlineFixedCharges({
                     >
                       {charge.name}
                     </span>
-                    {category && (
+                    {isFixedOnly ? (
+                      <span className="ml-2 text-xs px-1 py-0.5 rounded bg-gray-600/50 text-gray-400">
+                        Fixe
+                      </span>
+                    ) : category && (
                       <span
                         className="ml-2 text-xs px-1 py-0.5 rounded"
                         style={{ backgroundColor: `${category.color}20`, color: category.color }}
@@ -272,22 +388,32 @@ export function InlineFixedCharges({
                     )}
                   </div>
 
-                  {/* Spending vs budget */}
+                  {/* Amount display */}
                   <div className="text-right flex-shrink-0">
-                    <span
-                      className={`text-sm font-medium ${
-                        charge.isEnabled
-                          ? isOverBudget
-                            ? 'text-red-400'
-                            : spent > 0
-                              ? 'text-yellow-400'
-                              : 'text-gray-400'
-                          : 'text-gray-600'
-                      }`}
-                    >
-                      {formatMoney(spent)}
-                    </span>
-                    <span className="text-gray-500 text-sm"> / {formatMoney(charge.amount)}</span>
+                    {isFixedOnly ? (
+                      // Fixed charge: just show the amount
+                      <span className={`text-sm font-medium ${charge.isEnabled ? 'text-white' : 'text-gray-600'}`}>
+                        {formatMoney(charge.amount)}
+                      </span>
+                    ) : (
+                      // Tracked charge: show spent / budget
+                      <>
+                        <span
+                          className={`text-sm font-medium ${
+                            charge.isEnabled
+                              ? isOverBudget
+                                ? 'text-red-400'
+                                : spent > 0
+                                  ? 'text-yellow-400'
+                                  : 'text-gray-400'
+                              : 'text-gray-600'
+                          }`}
+                        >
+                          {formatMoney(spent)}
+                        </span>
+                        <span className="text-gray-500 text-sm"> / {formatMoney(charge.amount)}</span>
+                      </>
+                    )}
                   </div>
 
                   {/* Actions */}
@@ -308,8 +434,8 @@ export function InlineFixedCharges({
                   </div>
                 </div>
 
-                {/* Progress bar */}
-                {charge.isEnabled && charge.amount > 0 && (
+                {/* Progress bar - only for tracked charges (not fixed) */}
+                {!isFixedOnly && charge.isEnabled && charge.amount > 0 && (
                   <div className="mt-1.5 ml-6">
                     <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                       <div
@@ -369,6 +495,7 @@ export function InlineFixedCharges({
               className="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
             >
               <option value="">Catégorie</option>
+              <option value="fixed">Fixe (pas de suivi)</option>
               {expenseCategories.map(cat => (
                 <option key={cat.id} value={cat.id}>
                   {cat.name}

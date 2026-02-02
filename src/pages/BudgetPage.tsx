@@ -20,6 +20,7 @@ import {
   List,
   Link,
   Landmark,
+  RotateCcw,
 } from 'lucide-react'
 import { Card, CardTitle, Button, useToast } from '@components/common'
 import { QuickAddExpense, InlineFixedCharges } from '@components/budget'
@@ -31,6 +32,7 @@ import {
   savingsGoalService,
   settingsService,
   assetAccountService,
+  db,
 } from '@services/db'
 import { useAllTransactions } from '@hooks/index'
 import { formatMoney, formatPercent } from '@utils/formatters'
@@ -98,6 +100,43 @@ export function BudgetPage() {
         setHouseholdMembers(members)
       }
     })
+
+    // Cleanup duplicate categoryBudgets (keep only one per categoryId, prefer the one with higher limit)
+    categoryBudgetService.getAll().then(async (budgets) => {
+      const seen = new Map<string, typeof budgets[0]>()
+      const toDelete: string[] = []
+
+      for (const budget of budgets) {
+        const existing = seen.get(budget.categoryId)
+        if (!existing) {
+          seen.set(budget.categoryId, budget)
+        } else {
+          // Keep the one with higher monthlyLimit
+          if (budget.monthlyLimit > existing.monthlyLimit) {
+            toDelete.push(existing.id)
+            seen.set(budget.categoryId, budget)
+          } else {
+            toDelete.push(budget.id)
+          }
+        }
+      }
+
+      // Also remove budgets for old 'housing' category if 'loyer' or 'energie' exist
+      const hasLoyer = seen.has('loyer')
+      const hasEnergie = seen.has('energie')
+      if ((hasLoyer || hasEnergie) && seen.has('housing')) {
+        toDelete.push(seen.get('housing')!.id)
+        seen.delete('housing')
+      }
+
+      if (toDelete.length > 0) {
+        console.log(`🧹 Nettoyage de ${toDelete.length} budget(s) catégorie en double`)
+        for (const id of toDelete) {
+          await categoryBudgetService.delete(id)
+        }
+      }
+    })
+
     return () => { isMounted = false }
   }, [])
 
@@ -209,6 +248,19 @@ export function BudgetPage() {
     toast.success('Charges fixes mises à jour', 'Les modifications ont été enregistrées')
   }, [budgetConfig, latestBudgetConfig, selectedBudgetMonth, toast])
 
+  // Reset all budgetGroup assignments
+  const handleResetBudgetGroups = useCallback(async () => {
+    const allTx = await db.transactions.toArray()
+    let count = 0
+    for (const tx of allTx) {
+      if (tx.budgetGroup) {
+        await db.transactions.update(tx.id, { budgetGroup: undefined })
+        count++
+      }
+    }
+    toast.success('Réinitialisé', `${count} transactions remises à zéro`)
+  }, [toast])
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -246,6 +298,13 @@ export function BudgetPage() {
                 Aujourd'hui
               </button>
             )}
+            <button
+              onClick={handleResetBudgetGroups}
+              className="p-1 hover:bg-red-500/20 rounded transition-colors ml-2"
+              title="Réinitialiser les assignations"
+            >
+              <RotateCcw className="w-4 h-4 text-red-400" />
+            </button>
           </div>
           {isFutureMonth && (
             <p className="text-xs text-blue-400 mt-1 flex items-center gap-1">
@@ -496,8 +555,16 @@ function BudgetOverview({
     return result
   }, [transactions, categoryBudgets])
 
-  // Calculate total fixed charges (all go to 'needs')
-  const totalFixedCharges = useMemo(() => {
+  // Calculate total fixed charges - PLANNED amount (for budget display)
+  const totalFixedChargesPlanned = useMemo(() => {
+    return fixedCharges
+      .filter(c => c.isEnabled)
+      .reduce((sum, c) => sum + c.amount, 0)
+  }, [fixedCharges])
+
+  // Calculate total fixed charges - ALWAYS use planned amounts
+  // Fixed charges are what you PLAN to spend, not what you actually spent
+  const totalFixedChargesActual = useMemo(() => {
     return fixedCharges
       .filter(c => c.isEnabled)
       .reduce((sum, c) => sum + c.amount, 0)
@@ -529,7 +596,7 @@ function BudgetOverview({
 
   // Auto-migrate orphaned charges based on categoryId patterns
   const migrateOrphanedCharges = useCallback(() => {
-    const needsCategories = ['housing', 'telecom', 'transport', 'health', 'bank-fees', 'utilities']
+    const needsCategories = ['loyer', 'energie', 'telecom', 'transport', 'health', 'bank-fees', 'utilities']
     const migratedCharges = fixedCharges.map(charge => {
       if (charge.budgetGroup) return charge
       const isNeeds = needsCategories.some(cat => charge.categoryId.includes(cat))
@@ -539,6 +606,7 @@ function BudgetOverview({
   }, [fixedCharges, onFixedChargesChange])
 
   // Calculate budgets with limits
+  // SIMPLE: Besoins = 50%, Envies = 30% (based on income, ignore categoryBudgets)
   const budgetsByGroup = useMemo(() => {
     const result = new Map<BudgetGroupType, { budget: number; limit: number }>()
 
@@ -546,17 +614,15 @@ function BudgetOverview({
       if (group.id === 'savings') continue
 
       const targetBudget = (monthlyIncome * group.targetPercent) / 100
-      const groupBudgets = categoryBudgets.filter(b => b.isActive && b.group === group.id)
-      const configuredLimit = groupBudgets.reduce((sum, b) => sum + b.monthlyLimit, 0)
 
       result.set(group.id, {
         budget: targetBudget,
-        limit: configuredLimit > 0 ? configuredLimit : targetBudget,
+        limit: targetBudget, // Always use target percentage
       })
     }
 
     return result
-  }, [monthlyIncome, categoryBudgets])
+  }, [monthlyIncome])
 
   // Calculate total theoretical remaining for both groups
   // IMPORTANT: All hooks must be called before any conditional returns
@@ -604,7 +670,7 @@ function BudgetOverview({
     .filter(t => t.amount < 0)
     .reduce((sum, t) => sum + Math.abs(t.amount), 0)
 
-  const variableExpenses = totalExpenses - totalFixedCharges
+  const variableExpenses = totalExpenses - totalFixedChargesActual
   const remainingBudget = monthlyIncome - totalExpenses
 
   return (
@@ -676,34 +742,60 @@ function BudgetOverview({
           const budgetInfo = budgetsByGroup.get(group.id)
           if (!budgetInfo) return null
 
-          // Fixed charges only apply to 'needs'
-          const fixedSpent = group.id === 'needs' ? totalFixedCharges : 0
-          // Variable spending (total - fixed)
-          const totalSpent = realSpendingByGroup.get(group.id) || 0
-          const variableSpent = Math.max(0, totalSpent - fixedSpent)
+          // LOGIQUE: charges fixes + transactions assignées par l'utilisateur
+          let fixedSpent = 0
 
-          const theoreticalRemaining = Math.max(0, budgetInfo.limit - totalSpent)
-          const remaining = bankBalance !== null ? getRealisticRemaining(theoreticalRemaining) : theoreticalRemaining
+          // Pour Besoins: ajouter les charges fixes (Loyer)
+          if (group.id === 'needs') {
+            fixedSpent = fixedCharges
+              .filter(c => c.isEnabled && (c.categoryId === 'fixed' || !c.categoryId))
+              .reduce((sum, c) => sum + c.amount, 0)
+          }
+
+          // Transactions assignées par l'utilisateur
+          const assignedTransactions = transactions.filter(t =>
+            t.amount < 0 && t.budgetGroup === group.id
+          )
+
+          // DEBUG
+          if (group.id === 'needs') {
+            console.log('=== DEBUG TRANSACTIONS ===')
+            console.log('Mois affiché:', transactions.length > 0 ? transactions[0]?.date?.substring(0, 7) : 'aucune transaction')
+            console.log('Total transactions du mois:', transactions.length)
+            console.log('Dépenses du mois:', transactions.filter(t => t.amount < 0).length)
+            console.log('Assignées à needs:', assignedTransactions.length)
+            // Chercher Croquettes dans TOUTES les transactions
+            db.transactions.filter(t => t.description?.toLowerCase().includes('croquettes')).toArray().then(found => {
+              console.log('Croquettes trouvées (toute la DB):', found.map(t => ({ desc: t.description, date: t.date, amount: t.amount })))
+            })
+          }
+          const variableSpent = assignedTransactions.reduce((sum, t) => sum + Math.abs(t.amount), 0)
+          const totalSpent = fixedSpent + variableSpent
+
+          // Calculs simples
+          const remaining = budgetInfo.limit - totalSpent
           const percentUsed = budgetInfo.limit > 0 ? (totalSpent / budgetInfo.limit) * 100 : 0
-          const percentFixed = budgetInfo.limit > 0 ? (fixedSpent / budgetInfo.limit) * 100 : 0
-          const percentVariable = budgetInfo.limit > 0 ? (variableSpent / budgetInfo.limit) * 100 : 0
           const isOverBudget = totalSpent > budgetInfo.limit
           const isWarning = percentUsed >= 80 && percentUsed < 100
-          const isLimitedByBalance = bankBalance !== null && remaining < theoreticalRemaining
 
           // Get category breakdown for variable spending
-          // For "needs": only explicitly assigned categories
+          // For "needs": only explicitly assigned categories, EXCLUDING fixed charge categories
           // For "wants": ALL categories with spending that are NOT in "needs" (default behavior)
           const needsCategoryIds = new Set(
             categoryBudgets.filter(b => b.isActive && b.group === 'needs').map(b => b.categoryId)
           )
 
+          // Categories used in fixed charges should not appear in variable expenses
+          const fixedChargeCategoryIds = new Set(
+            fixedCharges.filter(c => c.isEnabled && c.amount > 0).map(c => c.categoryId)
+          )
+
           let displayCategories: Array<{ categoryId: string; budget: CategoryBudget | null; spent: number }>
 
           if (group.id === 'needs') {
-            // Needs: only explicitly assigned categories
+            // Needs: only explicitly assigned categories, excluding fixed charge categories
             displayCategories = categoryBudgets
-              .filter(b => b.isActive && b.group === 'needs')
+              .filter(b => b.isActive && b.group === 'needs' && !fixedChargeCategoryIds.has(b.categoryId))
               .map(b => ({
                 categoryId: b.categoryId,
                 budget: b,
@@ -724,9 +816,9 @@ function BudgetOverview({
                 spent: spendingByCategory.get(b.categoryId) || 0,
               }))
 
-            // Add categories with spending that are NOT in needs and NOT already in configured wants
+            // Add categories with spending that are NOT in needs, NOT in configured wants, and NOT fixed charges
             const unconfiguredSpending = Array.from(spendingByCategory.entries())
-              .filter(([catId]) => !needsCategoryIds.has(catId) && !wantsBudgetCategoryIds.has(catId))
+              .filter(([catId]) => !needsCategoryIds.has(catId) && !wantsBudgetCategoryIds.has(catId) && !fixedChargeCategoryIds.has(catId))
               .map(([catId, spent]) => ({
                 categoryId: catId,
                 budget: null,
@@ -794,7 +886,7 @@ function BudgetOverview({
                 </div>
               </div>
 
-              {/* Main Number - What's LEFT (realistic based on bank balance) */}
+              {/* Main Number - What's LEFT (simple calculation: budget - spent) */}
               <div className="text-center py-4 mb-4 bg-gray-800/50 rounded-xl">
                 <p className="text-sm text-gray-400 mb-1">
                   {isOverBudget ? 'Dépassement de' : 'Tu peux encore dépenser'}
@@ -802,50 +894,25 @@ function BudgetOverview({
                 <p className={`text-4xl font-bold ${
                   isOverBudget
                     ? 'text-red-400'
-                    : isLimitedByBalance
-                    ? 'text-orange-400'
                     : isWarning
                     ? 'text-yellow-400'
                     : 'text-white'
                 }`}>
-                  {isOverBudget ? formatMoney(totalSpent - budgetInfo.limit) : formatMoney(remaining)}
+                  {isOverBudget ? formatMoney(-remaining) : formatMoney(remaining)}
                 </p>
-                {isLimitedByBalance && !isOverBudget && (
-                  <p className="text-xs text-orange-400 mt-1">
-                    Limité par ton solde (budget: {formatMoney(theoreticalRemaining)})
-                  </p>
-                )}
-                {!isLimitedByBalance && !isOverBudget && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    selon ton solde réel
-                  </p>
-                )}
               </div>
 
-              {/* Stacked Progress Bar - Fixed (dark) + Variable (light) */}
+              {/* Progress Bar */}
               <div className="mb-4">
-                <div className="h-4 bg-gray-700 rounded-full overflow-hidden relative flex">
-                  {/* Fixed charges portion (darker) */}
-                  {percentFixed > 0 && (
-                    <div
-                      className="h-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(percentFixed, 100)}%`,
-                        backgroundColor: isOverBudget ? '#b91c1c' : `${group.color}`,
-                        opacity: 0.7,
-                      }}
-                    />
-                  )}
-                  {/* Variable spending portion (lighter) */}
-                  {percentVariable > 0 && (
-                    <div
-                      className="h-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(percentVariable, 100 - percentFixed)}%`,
-                        backgroundColor: isOverBudget ? '#ef4444' : isWarning ? '#f59e0b' : group.color,
-                      }}
-                    />
-                  )}
+                <div className="h-4 bg-gray-700 rounded-full overflow-hidden relative">
+                  {/* Spent portion */}
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(percentUsed, 100)}%`,
+                      backgroundColor: isOverBudget ? '#ef4444' : isWarning ? '#f59e0b' : group.color,
+                    }}
+                  />
                   {/* Warning threshold marker at 80% */}
                   <div
                     className="absolute top-0 bottom-0 w-0.5 bg-yellow-500/50"
@@ -854,21 +921,9 @@ function BudgetOverview({
                 </div>
                 <div className="flex justify-between text-xs mt-1">
                   <span className="text-gray-500">0 €</span>
-                  <div className="flex items-center gap-2">
-                    {fixedSpent > 0 && (
-                      <span className="text-gray-400">
-                        Fixe: {formatMoney(fixedSpent)}
-                      </span>
-                    )}
-                    {variableSpent > 0 && (
-                      <span className="text-gray-400">
-                        Variable: {formatMoney(variableSpent)}
-                      </span>
-                    )}
-                    <span className={`font-medium ${isOverBudget ? 'text-red-400' : ''}`}>
-                      {formatPercent(percentUsed, 0)}
-                    </span>
-                  </div>
+                  <span className={`font-medium ${isOverBudget ? 'text-red-400' : ''}`}>
+                    {formatPercent(percentUsed, 0)}
+                  </span>
                   <span className="text-gray-500">{formatMoney(budgetInfo.limit)}</span>
                 </div>
               </div>
@@ -884,16 +939,11 @@ function BudgetOverview({
                   <p className={`text-lg font-semibold ${isOverBudget ? 'text-red-400' : 'text-white'}`}>
                     {formatMoney(totalSpent)}
                   </p>
-                  {fixedSpent > 0 && variableSpent > 0 && (
-                    <p className="text-xs text-gray-500">
-                      {formatMoney(fixedSpent)} fixe + {formatMoney(variableSpent)} var.
-                    </p>
-                  )}
                 </div>
                 <div>
                   <p className="text-xs text-gray-500 mb-0.5">Reste</p>
                   <p className={`text-lg font-semibold ${isOverBudget ? 'text-red-400' : 'text-green-400'}`}>
-                    {isOverBudget ? `-${formatMoney(totalSpent - budgetInfo.limit)}` : formatMoney(budgetInfo.limit - totalSpent)}
+                    {isOverBudget ? `-${formatMoney(-remaining)}` : formatMoney(remaining)}
                   </p>
                 </div>
               </div>
@@ -912,25 +962,59 @@ function BudgetOverview({
                 </div>
               )}
 
-              {/* Categories with spending */}
-              {displayCategories.length > 0 && (
+              {/* Transactions assignées à ce groupe */}
+              {assignedTransactions.length > 0 && (
+                <div className="mb-4 p-3 bg-gray-800/30 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-2">
+                    <List className="w-3 h-3" />
+                    Dépenses ({assignedTransactions.length})
+                  </p>
+                  <div className="space-y-2">
+                    {assignedTransactions.map(t => {
+                      const category = categoryMap.get(t.category)
+                      return (
+                        <div key={t.id} className="flex items-center justify-between p-2 bg-gray-700/30 rounded">
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <div
+                              className="w-2 h-2 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: category?.color || '#94a3b8' }}
+                            />
+                            <span className="text-sm text-white truncate">{t.description}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-white">{formatMoney(Math.abs(t.amount))}</span>
+                            <button
+                              onClick={async () => {
+                                const newGroup = group.id === 'needs' ? 'wants' : 'needs'
+                                await db.transactions.update(t.id, { budgetGroup: newGroup })
+                              }}
+                              className="p-1 hover:bg-gray-600 rounded text-gray-400 hover:text-white"
+                              title={`Déplacer vers ${group.id === 'needs' ? 'Envies' : 'Besoins'}`}
+                            >
+                              {group.id === 'needs' ? <ArrowRight className="w-4 h-4" /> : <ArrowLeft className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Categories with spending - Only for Envies (wants) */}
+              {group.id === 'wants' && displayCategories.length > 0 && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-2">
                       <List className="w-3 h-3" />
-                      {group.id === 'needs' ? 'Dépenses variables' : 'Dépenses'}
+                      Dépenses
                     </p>
                     <p className="text-xs text-gray-400">
-                      dépensé{group.id === 'needs' ? ' / budget' : ''}
+                      dépensé
                     </p>
                   </div>
                   {displayCategories.map(item => {
                     const category = categoryMap.get(item.categoryId)
-                    const monthlyLimit = item.budget?.monthlyLimit || 0
-                    const catPercent = monthlyLimit > 0 ? (item.spent / monthlyLimit) * 100 : 0
-                    const catOver = monthlyLimit > 0 && item.spent > monthlyLimit
-                    const otherGroup = group.id === 'needs' ? 'wants' : 'needs'
-                    const otherGroupName = group.id === 'needs' ? 'Envies' : 'Besoins'
 
                     return (
                       <div key={item.categoryId} className="p-2 bg-gray-800/30 rounded-lg group">
@@ -940,46 +1024,21 @@ function BudgetOverview({
                             style={{ backgroundColor: category?.color || '#94a3b8' }}
                           />
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center justify-between">
                               <span className="text-sm font-medium text-white truncate">
                                 {category?.name || item.categoryId}
                               </span>
-                              <div className="flex items-center gap-2">
-                                <span className={`text-sm font-bold ${catOver ? 'text-red-400' : 'text-white'}`}>
-                                  {formatMoney(item.spent)}
-                                </span>
-                                {group.id === 'needs' && (
-                                  <>
-                                    <span className="text-gray-500">/</span>
-                                    <span className="text-sm text-gray-400">
-                                      {monthlyLimit > 0 ? formatMoney(monthlyLimit) : '—'}
-                                    </span>
-                                  </>
-                                )}
-                              </div>
+                              <span className="text-sm font-bold text-white">
+                                {formatMoney(item.spent)}
+                              </span>
                             </div>
-                            {group.id === 'needs' && monthlyLimit > 0 && (
-                              <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{
-                                    width: `${Math.min(catPercent, 100)}%`,
-                                    backgroundColor: catOver ? '#ef4444' : catPercent > 80 ? '#f59e0b' : category?.color || '#94a3b8',
-                                  }}
-                                />
-                              </div>
-                            )}
                           </div>
                           <button
-                            onClick={() => handleMoveCategoryGroup(item.categoryId, otherGroup)}
+                            onClick={() => handleMoveCategoryGroup(item.categoryId, 'needs')}
                             className="p-1.5 bg-gray-700 hover:bg-purple-500/30 rounded transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                            title={`Déplacer vers ${otherGroupName}`}
+                            title="Déplacer vers Besoins"
                           >
-                            {group.id === 'needs' ? (
-                              <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
-                            ) : (
-                              <ArrowLeft className="w-3.5 h-3.5 text-purple-400" />
-                            )}
+                            <ArrowLeft className="w-3.5 h-3.5 text-purple-400" />
                           </button>
                         </div>
                       </div>
@@ -988,20 +1047,81 @@ function BudgetOverview({
                 </div>
               )}
 
-              {displayCategories.length === 0 && group.id === 'wants' && (
+              {group.id === 'wants' && displayCategories.length === 0 && (
                 <p className="text-sm text-gray-500 text-center py-2">
                   Aucune dépense ce mois-ci
-                </p>
-              )}
-              {displayCategories.length === 0 && group.id === 'needs' && (
-                <p className="text-sm text-gray-500 text-center py-2">
-                  Configurez vos catégories dans l'onglet "Catégories"
                 </p>
               )}
             </Card>
           )
         })}
       </div>
+
+      {/* Dépenses à classer */}
+      {(() => {
+        const unassignedTransactions = transactions.filter(t => t.amount < 0 && !t.budgetGroup)
+        if (unassignedTransactions.length === 0) return null
+        return (
+          <Card className="border-2 border-dashed border-yellow-500/30">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-yellow-500/20">
+                <AlertTriangle className="w-5 h-5 text-yellow-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Dépenses à classer</h3>
+                <p className="text-xs text-gray-400">{unassignedTransactions.length} transaction(s) non assignée(s)</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {unassignedTransactions.map(t => {
+                const category = categories.find(c => c.id === t.category)
+                return (
+                  <div key={t.id} className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: category?.color || '#94a3b8' }}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm text-white truncate">{t.description}</p>
+                        <p className="text-xs text-gray-500">{category?.name || 'Non catégorisé'} • {t.date}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-white">{formatMoney(Math.abs(t.amount))}</span>
+                      <button
+                        onClick={async () => {
+                          await db.transactions.update(t.id, { budgetGroup: 'needs' })
+                        }}
+                        className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30"
+                      >
+                        Besoins
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await db.transactions.update(t.id, { budgetGroup: 'wants' })
+                        }}
+                        className="px-2 py-1 text-xs bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30"
+                      >
+                        Envies
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await db.transactions.delete(t.id)
+                        }}
+                        className="p-1 text-red-400 hover:bg-red-500/20 rounded"
+                        title="Supprimer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        )
+      })()}
 
       {/* Épargne Card */}
       <Card>
@@ -1099,7 +1219,7 @@ function BudgetOverview({
           </div>
 
           {/* Step 2: Fixed Charges */}
-          {totalFixedCharges > 0 && (
+          {totalFixedChargesPlanned > 0 && (
             <>
               <div className="flex items-center gap-4 mb-2">
                 <div className="w-32 text-right">
@@ -1108,9 +1228,9 @@ function BudgetOverview({
                 <div className="flex-1 h-8 bg-gray-700 rounded-lg overflow-hidden relative">
                   <div
                     className="h-full bg-gradient-to-r from-blue-600 to-blue-500 flex items-center justify-end pr-3"
-                    style={{ width: `${Math.min((totalFixedCharges / monthlyIncome) * 100, 100)}%` }}
+                    style={{ width: `${Math.min((totalFixedChargesPlanned / monthlyIncome) * 100, 100)}%` }}
                   >
-                    <span className="text-white font-semibold">-{formatMoney(totalFixedCharges)}</span>
+                    <span className="text-white font-semibold">-{formatMoney(totalFixedChargesPlanned)}</span>
                   </div>
                 </div>
               </div>
@@ -1178,10 +1298,10 @@ function BudgetOverview({
             {formatMoney(monthlyIncome)}
           </span>
           <span className="text-gray-500">−</span>
-          {totalFixedCharges > 0 && (
+          {totalFixedChargesPlanned > 0 && (
             <>
               <span className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full font-medium">
-                {formatMoney(totalFixedCharges)} fixes
+                {formatMoney(totalFixedChargesPlanned)} fixes
               </span>
               <span className="text-gray-500">−</span>
             </>
@@ -2144,8 +2264,8 @@ function YearlyBudgetView({ savingsGoals, monthlyIncome: _monthlyIncome, transac
 
 // Default fixed charges configuration
 const DEFAULT_FIXED_CHARGES = [
-  { key: 'rent', name: 'Loyer', categoryId: 'housing', placeholder: '800' },
-  { key: 'utilities', name: 'Électricité / Gaz', categoryId: 'housing', placeholder: '100' },
+  { key: 'rent', name: 'Loyer', categoryId: 'loyer', placeholder: '800' },
+  { key: 'utilities', name: 'Électricité / Gaz', categoryId: 'energie', placeholder: '100' },
   { key: 'groceries', name: 'Alimentation (budget)', categoryId: 'food-grocery', placeholder: '400' },
   { key: 'transport', name: 'Transport', categoryId: 'transport', placeholder: '100' },
   { key: 'telecom', name: 'Internet / Téléphone', categoryId: 'telecom', placeholder: '50' },
@@ -2281,14 +2401,14 @@ function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualInc
   }
 
   // Calculate total fixed charges
-  const totalFixedCharges = useMemo(() => {
+  const totalFixedChargesPlanned = useMemo(() => {
     return Object.entries(fixedCharges)
       .filter(([, charge]) => charge.enabled)
       .reduce((sum, [, charge]) => sum + (parseFloat(charge.amount) || 0), 0)
   }, [fixedCharges])
 
   const currentIncome = useActual ? actualIncome : (parseFloat(income) || 0)
-  const remainingAfterFixed = currentIncome - totalFixedCharges
+  const remainingAfterFixed = currentIncome - totalFixedChargesPlanned
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -2533,7 +2653,7 @@ function IncomeConfigModal({ config, baseConfig, month, isFutureMonth, actualInc
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Total charges fixes</span>
-                <span className="text-red-400">-{formatMoney(totalFixedCharges)}</span>
+                <span className="text-red-400">-{formatMoney(totalFixedChargesPlanned)}</span>
               </div>
               <div className="border-t border-gray-600 pt-2 flex justify-between font-medium">
                 <span>Reste à allouer</span>

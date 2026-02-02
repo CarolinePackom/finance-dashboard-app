@@ -59,12 +59,14 @@ const DEFAULT_PATTERNS: Record<string, RegExp[]> = {
     /ikea|leroy\s*merlin|castorama|bricorama|mr\s*bricolage/i,
     /action|gifi|la\s*foir.*fouille|centrakor|tati/i,
   ],
-  housing: [
-    /edf|engie|electricite|gaz|energie/i,
+  loyer: [
     /loyer|bailleur|immobilier|syndic|copropriete/i,
+    /victorias?\s*keys?/i,
+  ],
+  energie: [
+    /edf|engie|electricite|gaz|energie/i,
     /assurance\s*hab|maif|macif|matmut|axa/i,
     /eau|veolia|suez/i,
-    /victorias?\s*keys?/i,
   ],
   telecom: [
     /mobile|forfait|internet|fibre|box/i,
