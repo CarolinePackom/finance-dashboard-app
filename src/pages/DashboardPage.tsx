@@ -14,6 +14,7 @@ import {
   Table,
   Users,
   Clock,
+  ChevronDown,
 } from 'lucide-react'
 import { useTransactions } from '@store/TransactionContext'
 import { transactionService } from '@services/db'
@@ -56,6 +57,7 @@ export function DashboardPage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [filterType, setFilterType] = useState<'expense' | 'income'>('expense')
   const [activeTab, setActiveTab] = useState<DashboardTab>('overview')
+  const [recentTransactionsExpanded, setRecentTransactionsExpanded] = useState(false)
   const transactionListRef = useRef<HTMLDivElement>(null)
   const toast = useToast()
 
@@ -374,9 +376,20 @@ export function DashboardPage() {
 
           {/* Recent transactions */}
           <Card>
-            <CardTitle icon={<Clock className="w-5 h-5 text-blue-400" />}>
-              Dernières transactions
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle icon={<Clock className="w-5 h-5 text-blue-400" />}>
+                Dernières transactions
+              </CardTitle>
+              {allTransactions.length > 4 && (
+                <button
+                  onClick={() => setRecentTransactionsExpanded(!recentTransactionsExpanded)}
+                  className="flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  {recentTransactionsExpanded ? 'Réduire' : 'Voir plus'}
+                  <ChevronDown className={`w-4 h-4 transition-transform ${recentTransactionsExpanded ? 'rotate-180' : ''}`} />
+                </button>
+              )}
+            </div>
             <div className="space-y-2 mt-4">
               {allTransactions
                 .slice()
@@ -386,7 +399,7 @@ export function DashboardPage() {
                   if (dateCompare !== 0) return dateCompare
                   return (b.createdAt || '').localeCompare(a.createdAt || '')
                 })
-                .slice(0, 15)
+                .slice(0, recentTransactionsExpanded ? 15 : 4)
                 .map((t) => {
                   const category = categories.find(c => c.id === t.category)
                   return (
@@ -417,7 +430,7 @@ export function DashboardPage() {
               {allTransactions.length === 0 && (
                 <p className="text-center text-gray-500 py-4">Aucune transaction</p>
               )}
-              {allTransactions.length > 15 && (
+              {recentTransactionsExpanded && allTransactions.length > 15 && (
                 <button
                   onClick={() => setActiveTab('transactions')}
                   className="w-full text-center text-sm text-blue-400 hover:text-blue-300 py-2 mt-2"
